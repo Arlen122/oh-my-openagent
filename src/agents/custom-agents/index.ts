@@ -1,0 +1,5 @@
+export { CustomAgentConfigSchema, CustomAgentsFileSchema, type CustomAgentConfig, type SubagentRef, type CustomAgentsFile } from "./config-schema"
+export { loadCustomAgentsConfig } from "./config-loader"
+export { buildCustomPrimaryPrompt } from "./prompt-builder"
+export { createCustomAgents } from "./agent-factory"
+export { customAgentsRegistry } from "./registry"

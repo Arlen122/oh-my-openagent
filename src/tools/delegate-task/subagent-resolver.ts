@@ -15,6 +15,7 @@ import type { FallbackEntry } from "../../shared/model-requirements"
 import { resolveModelForDelegateTask } from "./model-selection"
 import { fuzzyMatchModel } from "../../shared/model-availability"
 import type { CategoryConfig } from "../../config/schema"
+import { customAgentsRegistry } from "../../agents/custom-agents/registry"
 
 type AgentMode = "subagent" | "primary" | "all" | undefined
 
@@ -59,6 +60,25 @@ export async function resolveSubagentExecution(
       error: `Cannot use subagent_type="${SISYPHUS_JUNIOR_AGENT}" directly. Use category parameter instead (e.g., ${categoryExamples}).
 
 Sisyphus-Junior is spawned automatically when you specify a category. Pick the appropriate category for your task domain.`,
+    }
+  }
+
+  // Custom agents isolation enforcement
+  if (parentAgent && customAgentsRegistry.isCustomPrimary(parentAgent)) {
+    const allowedRefs = customAgentsRegistry.getSubagentRefs(parentAgent)
+    const allowedNames = allowedRefs?.map(r => r.name.toLowerCase()) ?? []
+    if (!allowedNames.includes(agentName.toLowerCase())) {
+      return {
+        agentToUse: "",
+        categoryModel: undefined,
+        error: `"${parentAgent}" is not authorized to delegate to "${agentName}". Allowed subagents: ${allowedNames.join(", ") || "none"}`,
+      }
+    }
+  } else if (customAgentsRegistry.isCustomSubagent(agentName)) {
+    return {
+      agentToUse: "",
+      categoryModel: undefined,
+      error: `Built-in agent "${parentAgent ?? "unknown"}" cannot delegate to custom subagent "${agentName}". Custom subagents can only be called by their configured primary agent.`,
     }
   }
 

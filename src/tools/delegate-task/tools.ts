@@ -20,6 +20,7 @@ import {
   executeBackgroundTask,
   executeSyncTask,
 } from "./executor"
+import { customAgentsRegistry } from "../../agents/custom-agents/registry"
 
 export { resolveCategoryConfig } from "./categories"
 export type { SyncSessionCreatedEvent, DelegateTaskToolOptions, BuildSystemContentInput } from "./types"
@@ -144,6 +145,23 @@ export function createDelegateTask(options: DelegateTaskToolOptions): ToolDefini
       }
 
       const runInBackground = args.run_in_background === true
+
+      // Inject default_skills for custom subagent delegation
+      if (args.subagent_type && ctx.agent) {
+        const subagentRef = customAgentsRegistry.getSubagentRefForPrimary(ctx.agent, args.subagent_type)
+        if (subagentRef?.default_skills?.length) {
+          const existing = new Set(args.load_skills.map(s => s.toLowerCase()))
+          const toInject = subagentRef.default_skills.filter(s => !existing.has(s.toLowerCase()))
+          if (toInject.length > 0) {
+            args.load_skills = [...args.load_skills, ...toInject]
+            log("[task] Injected default_skills for custom subagent", {
+              subagent: args.subagent_type,
+              injected: toInject,
+              effective: args.load_skills,
+            })
+          }
+        }
+      }
 
       const { content: skillContent, contents: skillContents, error: skillError } = await resolveSkillContent(args.load_skills, {
         gitMasterConfig: options.gitMasterConfig,

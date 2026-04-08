@@ -26,6 +26,9 @@ import { collectPendingBuiltinAgents } from "./builtin-agents/general-agents"
 import { maybeCreateSisyphusConfig } from "./builtin-agents/sisyphus-agent"
 import { maybeCreateHephaestusConfig } from "./builtin-agents/hephaestus-agent"
 import { maybeCreateAtlasConfig } from "./builtin-agents/atlas-agent"
+import { loadCustomAgentsConfig } from "./custom-agents/config-loader"
+import { createCustomAgents } from "./custom-agents/agent-factory"
+import { log } from "../shared/logger"
 
 type AgentSource = AgentFactory | AgentConfig
 
@@ -176,6 +179,21 @@ export async function createBuiltinAgents(
   })
   if (atlasConfig) {
     result["atlas"] = atlasConfig
+  }
+
+  // Load and register custom agents (isolated from Sisyphus/Hephaestus/Atlas)
+  try {
+    const { agents: customAgentConfigs, warnings } = loadCustomAgentsConfig()
+    for (const w of warnings) {
+      log(w)
+    }
+    if (customAgentConfigs.length > 0) {
+      const customAgents = createCustomAgents(customAgentConfigs)
+      Object.assign(result, customAgents)
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    log("[custom-agents] Failed to load custom agents", { error: msg })
   }
 
   return result
