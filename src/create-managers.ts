@@ -4,6 +4,7 @@ import type { PluginContext, TmuxConfig } from "./plugin/types"
 
 import type { SubagentSessionCreatedEvent } from "./features/background-agent"
 import { BackgroundManager } from "./features/background-agent"
+import { WorkflowManager } from "./features/dynamic-workflow"
 import { SkillMcpManager } from "./features/skill-mcp-manager"
 import { initTaskToastManager } from "./features/task-toast-manager"
 import { TmuxSessionManager } from "./features/tmux-subagent"
@@ -15,6 +16,7 @@ import { markServerRunningInProcess } from "./shared/tmux/tmux-utils/server-heal
 export type Managers = {
   tmuxSessionManager: TmuxSessionManager
   backgroundManager: BackgroundManager
+  workflowManager: WorkflowManager
   skillMcpManager: SkillMcpManager
   configHandler: ReturnType<typeof createConfigHandler>
 }
@@ -79,6 +81,19 @@ export function createManagers(args: {
 
   const skillMcpManager = new SkillMcpManager()
 
+  const workflowConfig = pluginConfig.dynamic_workflow
+  const workflowManager = new WorkflowManager({
+    client: ctx.client,
+    backgroundManager,
+    directory: ctx.directory,
+    defaultSubagent: workflowConfig?.default_subagent,
+    maxConcurrency: workflowConfig?.max_concurrency,
+    maxAgentsPerRun: workflowConfig?.max_agents_per_run,
+    enableParentNotifications: workflowConfig?.notify_on_complete ?? backgroundNotificationHookEnabled,
+    persistScripts: workflowConfig?.persist_scripts,
+    scriptsDir: workflowConfig?.scripts_dir,
+  })
+
   const configHandler = createConfigHandler({
     ctx: { directory: ctx.directory, client: ctx.client },
     pluginConfig,
@@ -88,6 +103,7 @@ export function createManagers(args: {
   return {
     tmuxSessionManager,
     backgroundManager,
+    workflowManager,
     skillMcpManager,
     configHandler,
   }

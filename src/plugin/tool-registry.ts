@@ -27,6 +27,7 @@ import {
   createTaskList,
   createTaskUpdateTool,
   createHashlineEditTool,
+  createWorkflowTools,
 } from "../tools"
 import { getMainSessionID } from "../features/claude-code-session-state"
 import { filterDisabledTools } from "../shared/disabled-tools"
@@ -55,6 +56,8 @@ const LOW_PRIORITY_TOOL_ORDER = [
   "task_update",
   "background_output",
   "background_cancel",
+  "workflow_output",
+  "workflow_cancel",
   "edit",
   "ast_grep_replace",
   "ast_grep_search",
@@ -101,7 +104,7 @@ export function trimToolsToCap(filteredTools: ToolsRecord, maxTools: number): vo
 export function createToolRegistry(args: {
   ctx: PluginContext
   pluginConfig: OhMyOpenCodeConfig
-  managers: Pick<Managers, "backgroundManager" | "tmuxSessionManager" | "skillMcpManager">
+  managers: Pick<Managers, "backgroundManager" | "tmuxSessionManager" | "skillMcpManager" | "workflowManager">
   skillContext: SkillContext
   availableCategories: AvailableCategory[]
   interactiveBashEnabled?: boolean
@@ -198,6 +201,11 @@ export function createToolRegistry(args: {
     ? { edit: createHashlineEditTool(ctx) }
     : {}
 
+  const workflowEnabled = pluginConfig.dynamic_workflow?.enabled ?? true
+  const workflowToolsRecord: Record<string, ToolDefinition> = workflowEnabled
+    ? createWorkflowTools(managers.workflowManager, ctx.client)
+    : {}
+
   const allTools: Record<string, ToolDefinition> = {
     ...builtinTools,
     ...createGrepTools(ctx),
@@ -213,6 +221,7 @@ export function createToolRegistry(args: {
     ...(interactiveBashEnabled ? { interactive_bash } : {}),
     ...taskToolsRecord,
     ...hashlineToolsRecord,
+    ...workflowToolsRecord,
   }
 
   for (const toolDefinition of Object.values(allTools)) {

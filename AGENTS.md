@@ -68,6 +68,7 @@ OhMyOpenCodePlugin(ctx)
 | Add new doctor check | `src/cli/doctor/checks/` | Register in checks/index.ts |
 | Modify config schema | `src/config/schema/` + update root schema | Zod v4, add to OhMyOpenCodeConfigSchema |
 | Add new category | `src/tools/delegate-task/constants.ts` | DEFAULT_CATEGORIES + CATEGORY_MODEL_REQUIREMENTS |
+| Dynamic workflow (design) | `docs/superpowers/specs/2026-06-03-dynamic-workflow-design.md` | Phase 1: `src/features/dynamic-workflow/` + `src/tools/workflow/` |
 
 ## MULTI-LEVEL CONFIG
 

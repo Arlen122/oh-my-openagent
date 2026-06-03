@@ -1,0 +1,11 @@
+export const WORKFLOW_DEFAULT_SUBAGENT = "general"
+export const WORKFLOW_DEFAULT_MAX_CONCURRENCY = 16
+export const WORKFLOW_MAX_CONCURRENCY_CAP = 32
+export const WORKFLOW_DEFAULT_MAX_AGENTS_PER_RUN = 1000
+
+export const WORKFLOW_NONDETERMINISM_ERROR =
+  "Workflow scripts must be deterministic: Date.now()/Math.random()/new Date() are unavailable"
+
+export const WORKFLOW_AGENT_POLL_INTERVAL_MS = 2000
+export const WORKFLOW_RESULT_PREVIEW_MAX_CHARS = 280
+export const WORKFLOW_NOTIFICATION_RESULT_MAX_CHARS = 4000

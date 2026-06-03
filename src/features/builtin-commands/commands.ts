@@ -8,6 +8,7 @@ import { REFACTOR_TEMPLATE } from "./templates/refactor"
 import { START_WORK_TEMPLATE } from "./templates/start-work"
 import { HANDOFF_TEMPLATE } from "./templates/handoff"
 import { REMOVE_AI_SLOPS_TEMPLATE } from "./templates/remove-ai-slops"
+import { WORKFLOW_TEMPLATE } from "./templates/workflow"
 
 export interface LoadBuiltinCommandsOptions {
   useRegisteredAgents?: boolean
@@ -104,6 +105,17 @@ ${REMOVE_AI_SLOPS_TEMPLATE}
 <user-request>
 $ARGUMENTS
 </user-request>`,
+    },
+    workflow: {
+      description: "(builtin) Design and launch a dynamic workflow that orchestrates many subagents in the background",
+      template: `<command-instruction>
+${WORKFLOW_TEMPLATE}
+</command-instruction>
+
+<user-request>
+$ARGUMENTS
+</user-request>`,
+      argumentHint: '"task description"',
     },
     handoff: {
       description: "(builtin) Create a detailed context summary for continuing work in a new session",

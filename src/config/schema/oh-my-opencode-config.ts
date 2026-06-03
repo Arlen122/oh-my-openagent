@@ -9,6 +9,7 @@ import { CategoriesConfigSchema } from "./categories"
 import { ClaudeCodeConfigSchema } from "./claude-code"
 import { CommentCheckerConfigSchema } from "./comment-checker"
 import { BuiltinCommandNameSchema } from "./commands"
+import { DynamicWorkflowConfigSchema } from "./dynamic-workflow"
 import { ExperimentalConfigSchema } from "./experimental"
 import { GitMasterConfigSchema } from "./git-master"
 import { NotificationConfigSchema } from "./notification"
@@ -57,6 +58,7 @@ export const OhMyOpenCodeConfigSchema = z.object({
    */
   runtime_fallback: z.union([z.boolean(), RuntimeFallbackConfigSchema]).optional(),
   background_task: BackgroundTaskConfigSchema.optional(),
+  dynamic_workflow: DynamicWorkflowConfigSchema.optional(),
   notification: NotificationConfigSchema.optional(),
   model_capabilities: ModelCapabilitiesConfigSchema.optional(),
   openclaw: OpenClawConfigSchema.optional(),

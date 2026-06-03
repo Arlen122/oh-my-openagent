@@ -1,0 +1,179 @@
+import { describe, expect, test } from "bun:test"
+import { parseWorkflowScript, runWorkflow } from "./workflow-runtime"
+import type { WorkflowAgentRunner } from "./types"
+
+describe("parseWorkflowScript", () => {
+  describe("#given a valid meta export", () => {
+    test("#then extracts name and description", () => {
+      // given
+      const script = `export const meta = { name: 'inspect', description: 'Inspect the repo' }\nawait agent('go', { label: 'x' })`
+
+      // when
+      const { meta, body } = parseWorkflowScript(script)
+
+      // then
+      expect(meta.name).toBe("inspect")
+      expect(meta.description).toBe("Inspect the repo")
+      expect(body).not.toContain("export const meta")
+    })
+
+    test("#then supports optional phases", () => {
+      // given
+      const script = `export const meta = { name: 'a', description: 'b', phases: [{ title: 'Scan' }] }\nawait agent('go')`
+
+      // when
+      const { meta } = parseWorkflowScript(script)
+
+      // then
+      expect(meta.phases).toEqual([{ title: "Scan" }])
+    })
+  })
+
+  describe("#given an invalid script", () => {
+    test("#then rejects a missing meta export", () => {
+      // given
+      const script = `const meta = { name: 'a', description: 'b' }\nawait agent('go')`
+
+      // when / then
+      expect(() => parseWorkflowScript(script)).toThrow(/meta/)
+    })
+
+    test("#then rejects an empty name", () => {
+      // given
+      const script = `export const meta = { name: '', description: 'b' }`
+
+      // when / then
+      expect(() => parseWorkflowScript(script)).toThrow(/meta.name/)
+    })
+
+    test("#then rejects Date.now()", () => {
+      // given
+      const script = `export const meta = { name: 'a', description: 'b' }\nconst t = Date.now()`
+
+      // when / then
+      expect(() => parseWorkflowScript(script)).toThrow(/deterministic/)
+    })
+
+    test("#then rejects Math.random()", () => {
+      // given
+      const script = `export const meta = { name: 'a', description: 'b' }\nconst r = Math.random()`
+
+      // when / then
+      expect(() => parseWorkflowScript(script)).toThrow(/deterministic/)
+    })
+
+    test("#then rejects template interpolation in meta", () => {
+      // given
+      const name = "x"
+      const script = `export const meta = { name: \`a-\${${JSON.stringify(name)}}\`, description: 'b' }`
+
+      // when / then
+      expect(() => parseWorkflowScript(script)).toThrow()
+    })
+  })
+})
+
+describe("runWorkflow", () => {
+  function stubRunner(handler: (prompt: string) => unknown): WorkflowAgentRunner {
+    return {
+      async run(prompt) {
+        return handler(prompt)
+      },
+    }
+  }
+
+  describe("#given a single-agent workflow", () => {
+    test("#then returns the script result and counts agents", async () => {
+      // given
+      const script = `export const meta = { name: 'a', description: 'b' }\nconst r = await agent('hello', { label: 'greet' })\nreturn { r }`
+      const runner = stubRunner((prompt) => `echo:${prompt}`)
+
+      // when
+      const result = await runWorkflow(script, { agent: runner })
+
+      // then
+      expect(result.agentCount).toBe(1)
+      expect(result.result).toEqual({ r: "echo:hello" })
+    })
+  })
+
+  describe("#given parallel agents", () => {
+    test("#then runs thunks and preserves order", async () => {
+      // given
+      const script = `export const meta = { name: 'a', description: 'b' }
+const results = await parallel([1, 2, 3].map((n) => () => agent('n=' + n, { label: 'n' + n })))
+return results`
+      const runner = stubRunner((prompt) => prompt)
+
+      // when
+      const result = await runWorkflow(script, { agent: runner })
+
+      // then
+      expect(result.result).toEqual(["n=1", "n=2", "n=3"])
+      expect(result.agentCount).toBe(3)
+    })
+  })
+
+  describe("#given a failing agent", () => {
+    test("#then the branch resolves to null and is logged", async () => {
+      // given
+      const script = `export const meta = { name: 'a', description: 'b' }\nconst r = await agent('go', { label: 'boom' })\nreturn { r }`
+      const runner = stubRunner(() => {
+        throw new Error("subagent exploded")
+      })
+
+      // when
+      const result = await runWorkflow(script, { agent: runner })
+
+      // then
+      expect(result.result).toEqual({ r: null })
+      expect(result.logs.some((line) => line.includes("boom"))).toBe(true)
+    })
+  })
+
+  describe("#given an abort signal", () => {
+    test("#then aborts the run", async () => {
+      // given
+      const controller = new AbortController()
+      controller.abort()
+      const script = `export const meta = { name: 'a', description: 'b' }\nawait agent('go', { label: 'x' })`
+      const runner = stubRunner((prompt) => prompt)
+
+      // when / then
+      await expect(runWorkflow(script, { agent: runner, signal: controller.signal })).rejects.toThrow(/abort/)
+    })
+  })
+
+  describe("#given phase calls", () => {
+    test("#then records phases in order", async () => {
+      // given
+      const script = `export const meta = { name: 'a', description: 'b' }
+phase('Scan')
+await agent('s', { label: 's' })
+phase('Analyze')
+await agent('a', { label: 'a' })
+return true`
+      const runner = stubRunner((prompt) => prompt)
+
+      // when
+      const result = await runWorkflow(script, { agent: runner })
+
+      // then
+      expect(result.phases).toEqual(["Scan", "Analyze"])
+    })
+  })
+
+  describe("#given maxAgents limit", () => {
+    test("#then throws when exceeded", async () => {
+      // given
+      const script = `export const meta = { name: 'a', description: 'b' }
+await agent('1', { label: '1' })
+await agent('2', { label: '2' })
+return true`
+      const runner = stubRunner((prompt) => prompt)
+
+      // when / then
+      await expect(runWorkflow(script, { agent: runner, maxAgents: 1 })).rejects.toThrow(/max agents/)
+    })
+  })
+})

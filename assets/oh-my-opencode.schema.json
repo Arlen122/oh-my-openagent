@@ -60,7 +60,9 @@
           "refactor",
           "start-work",
           "stop-continuation",
-          "remove-ai-slops"
+          "remove-ai-slops",
+          "handoff",
+          "workflow"
         ]
       }
     },
@@ -5714,6 +5716,37 @@
             }
           },
           "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "dynamic_workflow": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "max_agents_per_run": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "default_subagent": {
+          "type": "string"
+        },
+        "notify_on_complete": {
+          "type": "boolean"
+        },
+        "persist_scripts": {
+          "type": "boolean"
+        },
+        "scripts_dir": {
+          "type": "string"
         }
       },
       "additionalProperties": false
