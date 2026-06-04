@@ -163,11 +163,3 @@ export async function postToCoordinator(
     })
   }
 }
-
-/** Push a full checkbox progress snapshot into the coordinator session. */
-export async function pushProgressBoard(
-  client: OpencodeClient,
-  run: WorkflowRun,
-): Promise<void> {
-  await postToCoordinator(client, run, buildProgressBoard(run))
-}

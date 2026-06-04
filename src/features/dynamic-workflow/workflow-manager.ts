@@ -78,9 +78,9 @@ export class WorkflowManager {
       toolCallID: input.toolCallID,
     }
 
-    // Create a dedicated coordinator session that the workflow tool card links
-    // to. Clicking the workflow in the TUI opens this session, where a live
-    // checkbox progress board and the nested subagent sessions are shown.
+    // Create a dedicated coordinator session that holds the live checkbox
+    // progress board. The user opens it via /session (the workflow tool card is
+    // not clickable in the stock OpenCode TUI).
     run.coordinatorSessionId = await this.createCoordinatorSession(run)
 
     const controller = new AbortController()
@@ -101,8 +101,8 @@ export class WorkflowManager {
       // Create the coordinator as a TOP-LEVEL (root) session, NOT a child of the
       // parent session. Standard OpenCode hides child sessions (those with a
       // parentID) from the session list, so a child coordinator is unreachable
-      // in the stock TUI. A root session shows up in the session list
-      // (leader + l), letting the user manually open the live progress board.
+      // in the stock TUI. A root session shows up via the /session command,
+      // letting the user manually open the live progress board.
       const response = await this.options.client.session.create({
         body: {
           title: `${WORKFLOW_COORDINATOR_SESSION_TITLE_PREFIX}: ${run.meta.name}`,

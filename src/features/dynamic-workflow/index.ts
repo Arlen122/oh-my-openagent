@@ -7,7 +7,6 @@ export { buildWorkflowNotificationText, notifyWorkflowComplete, notifyWorkflowSt
 export {
   buildProgressBoard,
   buildAgentCompletionMessage,
-  pushProgressBoard,
   postToCoordinator,
 } from "./workflow-progress"
 export { saveWorkflowScript, resolveScriptsDir, sanitizeWorkflowName } from "./script-store"

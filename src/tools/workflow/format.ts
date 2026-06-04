@@ -7,9 +7,9 @@ export function buildRunMetadata(run: WorkflowRun): {
   return {
     title: run.meta.description || run.meta.name,
     metadata: {
-      // `sessionId` makes the workflow tool card clickable in the OpenCode TUI:
-      // it opens the coordinator session that hosts the live progress board and
-      // the nested subagent sessions.
+      // Records the coordinator session id (which hosts the live progress board)
+      // in tool metadata. Note: the stock OpenCode TUI does not make non-`task`
+      // tool cards clickable, so the user opens this session via /session.
       ...(run.coordinatorSessionId ? { sessionId: run.coordinatorSessionId } : {}),
       workflowRunId: run.id,
       workflowName: run.meta.name,
