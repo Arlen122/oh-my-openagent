@@ -27,7 +27,8 @@ If the request is a single quick edit or only needs one or two delegations, say 
 4. Call \`agent()\` at least once. Give every \`agent()\` a unique short \`label\` (2-5 words).
 5. \`parallel\` takes functions, not promises: \`await parallel(items.map(item => () => agent('...', { label: '...' })))\`.
 6. Subagents do not share your code context: include enough task context and relevant paths in each prompt.
-7. Failed branches return null and are logged. Check for null before synthesizing conclusions. End with a synthesis \`agent()\` when combining multiple results, returning a compact JSON-serializable value.
+7. Failed branches return null and are logged. Check for null before synthesizing conclusions. End with a synthesis \`agent()\` when combining multiple results.
+8. **MANDATORY:** The script MUST end with an explicit \`return\` of the final deliverable (string or JSON-serializable object). This value is the workflow completion summary. Example: \`const summary = await agent(...); return { inventory, summary }\`. Do not omit \`return\` — a trailing expression alone does not set the result.
 
 ## How to run it
 

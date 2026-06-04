@@ -68,7 +68,7 @@ export interface WorkflowAgentRunOptions {
   phase?: string
   schema?: Record<string, unknown>
   model?: string
-  agentType?: string
+  subagentType?: string
   signal?: AbortSignal
 }
 

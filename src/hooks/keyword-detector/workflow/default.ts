@@ -18,6 +18,7 @@ How to use it:
 - Call the workflow tool with a single raw JavaScript string in \`script\`.
 - First statement MUST be \`export const meta = { name: 'short_snake_case', description: '...' }\`.
 - Use phase(title), agent(prompt, { label }), parallel(thunks), pipeline(items, ...stages). Call agent() at least once.
+- The script MUST end with an explicit \`return\` of the final deliverable (aggregated subagent outputs). Without \`return\`, the completion summary is empty.
 - The run executes in the background; the system notifies you on completion. Use workflow_output to inspect progress or results.
 
 If the task is a single quick edit or a couple of delegations, do NOT use workflow - use ordinary tools or the task tool instead.`

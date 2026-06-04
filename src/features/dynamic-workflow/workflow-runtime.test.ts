@@ -95,6 +95,28 @@ describe("runWorkflow", () => {
       expect(result.agentCount).toBe(1)
       expect(result.result).toEqual({ r: "echo:hello" })
     })
+
+    test("#then forwards opts.subagent_type to the runner", async () => {
+      // given
+      const script = `export const meta = { name: 'a', description: 'b' }
+const r = await agent('hello', { label: 'greet', subagent_type: 'explore' })
+return { r }`
+      const calls: Array<{ prompt: string; options: { subagentType?: string } }> = []
+      const runner: WorkflowAgentRunner = {
+        async run(prompt, options) {
+          calls.push({ prompt, options })
+          return `echo:${prompt}`
+        },
+      }
+
+      // when
+      const result = await runWorkflow(script, { agent: runner })
+
+      // then
+      expect(result.result).toEqual({ r: "echo:hello" })
+      expect(calls).toHaveLength(1)
+      expect(calls[0].options.subagentType).toBe("explore")
+    })
   })
 
   describe("#given parallel agents", () => {

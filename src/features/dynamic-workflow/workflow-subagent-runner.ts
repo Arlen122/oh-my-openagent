@@ -3,6 +3,8 @@ import type { BackgroundManager } from "../background-agent"
 import { WORKFLOW_AGENT_POLL_INTERVAL_MS } from "./constants"
 import { extractLastAssistantText, parseStructuredResult } from "./workflow-result-extractor"
 import type { WorkflowAgentRunOptions, WorkflowAgentRunner } from "./types"
+import { normalizeSDKResponse } from "../../shared/normalize-sdk-response"
+import { parseModelString } from "../../tools/delegate-task/model-string-parser"
 
 type OpencodeClient = PluginInput["client"]
 
@@ -27,6 +29,13 @@ export interface WorkflowSubagentRunnerOptions {
 
 const TERMINAL_STATUSES = new Set(["completed", "error", "cancelled", "interrupt"])
 
+type AgentMode = "subagent" | "primary" | "all" | undefined
+
+interface AgentInfo {
+  name: string
+  mode?: AgentMode
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -41,16 +50,19 @@ export class WorkflowSubagentRunner implements WorkflowAgentRunner {
   async run(prompt: string, runOptions: WorkflowAgentRunOptions): Promise<unknown> {
     const { backgroundManager, client } = this.options
     const effectivePrompt = buildSubagentPrompt(prompt, runOptions)
+    const targetAgent = await this.resolveTargetAgent(runOptions.subagentType)
+    const targetModel = resolveWorkflowModel(runOptions.model)
 
     const task = await backgroundManager.launch({
       description: runOptions.label,
       prompt: effectivePrompt,
-      agent: this.options.defaultAgent,
+      agent: targetAgent,
       parentSessionID: this.options.parentSessionID,
       parentMessageID: this.options.parentMessageID,
       parentAgent: this.options.parentAgent,
       parentTools: this.options.parentTools,
       parentModel: this.options.parentModel,
+      model: targetModel,
       suppressParentNotification: true,
     })
 
@@ -104,12 +116,44 @@ export class WorkflowSubagentRunner implements WorkflowAgentRunner {
       }
     }
   }
+
+  private async resolveTargetAgent(requestedSubagentType: string | undefined): Promise<string> {
+    const requested = requestedSubagentType?.trim()
+    if (!requested) {
+      return this.options.defaultAgent
+    }
+
+    const callableAgents = await this.getCallableAgents()
+    const matched = callableAgents.find((agent) => agent.toLowerCase() === requested.toLowerCase())
+    if (matched) {
+      return matched
+    }
+
+    throw new Error(
+      `Unknown workflow subagent_type "${requested}". Available subagents: ${callableAgents.join(", ")}`,
+    )
+  }
+
+  private async getCallableAgents(): Promise<string[]> {
+    const agentsResult = await this.options.client.app.agents()
+    const agents = normalizeSDKResponse(agentsResult, [] as AgentInfo[], {
+      preferResponseOnMissingData: true,
+    })
+    const callableAgents = agents
+      .filter((agent) => agent?.name && isTaskCallableAgentMode(agent.mode))
+      .map((agent) => agent.name)
+
+    if (!callableAgents.includes(this.options.defaultAgent)) {
+      callableAgents.push(this.options.defaultAgent)
+    }
+
+    return Array.from(new Set(callableAgents)).sort((a, b) => a.localeCompare(b))
+  }
 }
 
 function buildSubagentPrompt(prompt: string, runOptions: WorkflowAgentRunOptions): string {
   const parts: string[] = []
   if (runOptions.phase) parts.push(`Workflow phase: ${runOptions.phase}`)
-  if (runOptions.agentType) parts.push(`Act as workflow subagent type: ${runOptions.agentType}`)
   parts.push(prompt)
 
   if (runOptions.schema) {
@@ -129,4 +173,21 @@ function buildSubagentPrompt(prompt: string, runOptions: WorkflowAgentRunOptions
   }
 
   return parts.join("\n\n")
+}
+
+function isTaskCallableAgentMode(mode: AgentMode): boolean {
+  return mode === "all" || mode === "subagent"
+}
+
+function resolveWorkflowModel(model: string | undefined): ReturnType<typeof parseModelString> {
+  if (!model) {
+    return undefined
+  }
+
+  const parsed = parseModelString(model)
+  if (!parsed) {
+    throw new Error(`Invalid workflow agent model "${model}". Expected "provider/model" format.`)
+  }
+
+  return parsed
 }

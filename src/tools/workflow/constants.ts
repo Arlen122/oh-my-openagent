@@ -2,8 +2,11 @@ export const WORKFLOW_PROMPT_GUIDELINES = [
   "Use workflow only when the user explicitly asks for a workflow, fan-out, or multi-agent orchestration, or when a task decomposes into dozens of independent subagents.",
   "Pass one raw JavaScript string in the required `script` parameter. Do not include Markdown fences or prose around the script.",
   "The script's first statement MUST be `export const meta = { name: 'short_snake_case', description: 'non-empty description' }`. meta.phases is optional documentation; live progress is driven by phase(title).",
+  "MANDATORY FINAL RETURN: The script MUST end with an explicit `return` of the workflow deliverable (string or JSON-serializable object). That value becomes the completion summary shown to the caller. Omitting `return` yields an empty summary. Collect subagent outputs, synthesize them, then `return { ... }` or `return summaryText`. A trailing expression without `return` does NOT count.",
   "Write plain JavaScript after the meta export. Do NOT use TypeScript syntax, imports, require(), fs, network APIs, Date.now(), Math.random(), or new Date().",
   "Available globals: agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd, process.cwd(), budget. Every workflow MUST call agent() at least once.",
+  "agent(prompt, opts) supports opts.subagent_type for real subagent routing. If omitted, it defaults to general. Example: `await agent('scan code patterns', { label: 'scan', subagent_type: 'explore' })`.",
+  "agent(prompt, opts) supports opts.model to override the model for that subagent run. Use `provider/model` format, with optional variant suffix such as `openai/gpt-5.4 high`.",
   "parallel() takes functions, not promises: `await parallel(items.map(item => () => agent('...', { label: '...' })))`. Results are returned in input order.",
   "pipeline(items, ...stages) runs each item through stages sequentially while different items run concurrently. Each stage receives (previousValue, originalItem, index).",
   "Give every agent() a unique short `label` (2-5 words), e.g. { label: 'repo inventory' }. Labels drive the live status view.",
@@ -19,7 +22,7 @@ export const WORKFLOW_DESCRIPTION = [
   "Execute a deterministic JavaScript workflow that orchestrates many subagents with agent(), parallel(), and pipeline().",
   "The workflow runs in the background by default and returns a run_id immediately; the session stays responsive.",
   "After launching: do NOT block on workflow_output - wait for the automatic completion notification, and you MUST tell the user they can watch live progress via the /session command (open the '工作流: <name>' session).",
-  "`script` is required raw JavaScript that must start with `export const meta = { name, description }` and must call agent() at least once.",
+  "`script` is required raw JavaScript that must start with `export const meta = { name, description }`, must call agent() at least once, and MUST `return` a final result for the completion summary.",
   WORKFLOW_PROMPT_GUIDELINES,
 ].join("\n\n")
 

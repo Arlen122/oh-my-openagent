@@ -35,7 +35,7 @@ interface AgentOptions {
   phase?: string
   schema?: Record<string, unknown>
   model?: string
-  agentType?: string
+  subagentType?: string
 }
 
 interface RuntimeState {
@@ -109,7 +109,7 @@ export async function runWorkflow<T = unknown>(
           phase: assignedPhase,
           schema: normalizedOptions.schema,
           model: normalizedOptions.model,
-          agentType: normalizedOptions.agentType,
+          subagentType: normalizedOptions.subagentType,
           signal: options.signal,
         })
         throwIfAborted()
@@ -439,12 +439,13 @@ function optionalString(value: unknown, name: string): string | undefined {
 
 function normalizeAgentOptions(value: unknown): AgentOptions {
   if (!value || typeof value !== "object") throw new TypeError("agent options must be an object")
-  const options = value as AgentOptions
+  const options = value as AgentOptions & { subagent_type?: unknown }
+  const subagentType = options.subagentType ?? options.subagent_type
   return {
     label: optionalString(options.label, "agent label"),
     phase: optionalString(options.phase, "agent phase"),
     model: optionalString(options.model, "agent model"),
-    agentType: optionalString(options.agentType, "agent type"),
+    subagentType: optionalString(subagentType, "subagent type"),
     schema: options.schema && typeof options.schema === "object" ? options.schema : undefined,
   }
 }
