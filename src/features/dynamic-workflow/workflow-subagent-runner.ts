@@ -51,6 +51,7 @@ export class WorkflowSubagentRunner implements WorkflowAgentRunner {
       parentAgent: this.options.parentAgent,
       parentTools: this.options.parentTools,
       parentModel: this.options.parentModel,
+      suppressParentNotification: true,
     })
 
     this.options.onTaskLaunched?.({ taskId: task.id, sessionId: task.sessionID, label: runOptions.label })

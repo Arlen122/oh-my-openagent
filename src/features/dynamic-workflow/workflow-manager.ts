@@ -2,12 +2,14 @@ import type { PluginInput } from "@opencode-ai/plugin"
 import type { BackgroundManager } from "../background-agent"
 import { log } from "../../shared/logger"
 import {
+  WORKFLOW_COORDINATOR_SESSION_TITLE_PREFIX,
   WORKFLOW_DEFAULT_MAX_AGENTS_PER_RUN,
   WORKFLOW_DEFAULT_MAX_CONCURRENCY,
   WORKFLOW_DEFAULT_SUBAGENT,
   WORKFLOW_RESULT_PREVIEW_MAX_CHARS,
 } from "./constants"
-import { notifyWorkflowComplete } from "./workflow-notification"
+import { notifyWorkflowComplete, notifyWorkflowStarted } from "./workflow-notification"
+import { buildAgentCompletionMessage, buildProgressBoard, postToCoordinator } from "./workflow-progress"
 import { parseWorkflowScript, runWorkflow } from "./workflow-runtime"
 import { saveWorkflowScript } from "./script-store"
 import { WorkflowSubagentRunner } from "./workflow-subagent-runner"
@@ -41,6 +43,9 @@ export interface StartWorkflowInput {
 interface ActiveRun {
   run: WorkflowRun
   controller: AbortController
+  pushChain: Promise<void>
+  /** Last text posted to the coordinator, used to drop duplicate consecutive snapshots */
+  lastPushedText?: string
 }
 
 export class WorkflowManager {
@@ -52,7 +57,7 @@ export class WorkflowManager {
     this.options = options
   }
 
-  start(input: StartWorkflowInput): WorkflowRun {
+  async start(input: StartWorkflowInput): Promise<WorkflowRun> {
     const { meta } = parseWorkflowScript(input.script)
 
     const run: WorkflowRun = {
@@ -73,12 +78,71 @@ export class WorkflowManager {
       toolCallID: input.toolCallID,
     }
 
+    // Create a dedicated coordinator session that the workflow tool card links
+    // to. Clicking the workflow in the TUI opens this session, where a live
+    // checkbox progress board and the nested subagent sessions are shown.
+    run.coordinatorSessionId = await this.createCoordinatorSession(run)
+
     const controller = new AbortController()
-    this.runs.set(run.id, { run, controller })
+    this.runs.set(run.id, { run, controller, pushChain: Promise.resolve() })
     this.trackPending(run)
+
+    if (run.coordinatorSessionId) {
+      this.schedulePush(run.id)
+      notifyWorkflowStarted(this.options.client, run)
+    }
 
     void this.executeRun(run, controller)
     return run
+  }
+
+  private async createCoordinatorSession(run: WorkflowRun): Promise<string | undefined> {
+    try {
+      // Create the coordinator as a TOP-LEVEL (root) session, NOT a child of the
+      // parent session. Standard OpenCode hides child sessions (those with a
+      // parentID) from the session list, so a child coordinator is unreachable
+      // in the stock TUI. A root session shows up in the session list
+      // (leader + l), letting the user manually open the live progress board.
+      const response = await this.options.client.session.create({
+        body: {
+          title: `${WORKFLOW_COORDINATOR_SESSION_TITLE_PREFIX}: ${run.meta.name}`,
+        } as Record<string, unknown>,
+        query: { directory: this.options.directory },
+      })
+      const data = (response as { data?: { id?: unknown } }).data
+      const id = data?.id
+      if (typeof id === "string" && id.length > 0) return id
+      log("[dynamic-workflow] Coordinator session create returned no id:", { runId: run.id })
+      return undefined
+    } catch (error) {
+      log("[dynamic-workflow] Failed to create coordinator session:", {
+        runId: run.id,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return undefined
+    }
+  }
+
+  /**
+   * Queue a message to the coordinator session. The text is snapshotted eagerly
+   * (NOT lazily inside the promise) so that multiple queued pushes don't all
+   * render the same mutated run state and produce duplicate identical messages.
+   * Consecutive identical snapshots are dropped.
+   */
+  private enqueueCoordinatorPush(runId: string, text: string | undefined): void {
+    const entry = this.runs.get(runId)
+    if (!entry || !entry.run.coordinatorSessionId || !text) return
+    if (text === entry.lastPushedText) return
+    entry.lastPushedText = text
+    entry.pushChain = entry.pushChain
+      .catch(() => {})
+      .then(() => postToCoordinator(this.options.client, entry.run, text))
+  }
+
+  private schedulePush(runId: string): void {
+    const entry = this.runs.get(runId)
+    if (!entry) return
+    this.enqueueCoordinatorPush(runId, buildProgressBoard(entry.run))
   }
 
   getRun(runId: string): WorkflowRun | undefined {
@@ -121,7 +185,7 @@ export class WorkflowManager {
     const runner = new WorkflowSubagentRunner({
       backgroundManager: this.options.backgroundManager,
       client: this.options.client,
-      parentSessionID: run.parentSessionID,
+      parentSessionID: run.coordinatorSessionId ?? run.parentSessionID,
       parentMessageID: run.parentMessageID,
       parentAgent: run.parentAgent,
       parentTools: run.parentTools,
@@ -155,6 +219,7 @@ export class WorkflowManager {
         onPhase: (title) => {
           run.currentPhase = title
           if (!run.phases.includes(title)) run.phases.push(title)
+          this.schedulePush(run.id)
         },
         onAgentStart: (event) => {
           run.agents.push({
@@ -164,12 +229,14 @@ export class WorkflowManager {
             prompt: event.prompt,
             status: "running",
           })
+          this.schedulePush(run.id)
         },
         onAgentEnd: (event) => {
           const entry = findRunningAgent(run, event.label)
           if (entry) {
             entry.status = event.result === null ? "error" : "done"
             entry.resultPreview = preview(event.result)
+            this.enqueueCoordinatorPush(run.id, buildAgentCompletionMessage(entry, event.result))
           }
         },
       })
@@ -202,6 +269,7 @@ export class WorkflowManager {
   }
 
   private finishRun(run: WorkflowRun): void {
+    this.schedulePush(run.id)
     const shouldReply = this.releasePending(run)
     void notifyWorkflowComplete({
       client: this.options.client,

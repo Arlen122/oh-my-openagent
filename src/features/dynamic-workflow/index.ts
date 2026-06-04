@@ -3,7 +3,13 @@ export type { WorkflowManagerOptions, StartWorkflowInput } from "./workflow-mana
 export { parseWorkflowScript, runWorkflow } from "./workflow-runtime"
 export type { RunWorkflowOptions } from "./workflow-runtime"
 export { WorkflowSubagentRunner } from "./workflow-subagent-runner"
-export { buildWorkflowNotificationText, notifyWorkflowComplete } from "./workflow-notification"
+export { buildWorkflowNotificationText, notifyWorkflowComplete, notifyWorkflowStarted } from "./workflow-notification"
+export {
+  buildProgressBoard,
+  buildAgentCompletionMessage,
+  pushProgressBoard,
+  postToCoordinator,
+} from "./workflow-progress"
 export { saveWorkflowScript, resolveScriptsDir, sanitizeWorkflowName } from "./script-store"
 export {
   WORKFLOW_DEFAULT_SUBAGENT,

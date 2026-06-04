@@ -37,9 +37,22 @@ function createFakeBackgroundManager(options?: {
   return { manager: manager as unknown as BackgroundManager, launched }
 }
 
-function createFakeClient(assistantText: string): OpencodeClient {
+interface CoordinatorPost {
+  sessionId: string
+  text: string
+}
+
+function createFakeClient(
+  assistantText: string,
+  coordinatorPosts?: CoordinatorPost[],
+): OpencodeClient {
+  let coordCounter = 0
   return {
     session: {
+      async create() {
+        coordCounter++
+        return { data: { id: `ses_coord_${coordCounter}` } }
+      },
       async messages() {
         return {
           data: [
@@ -50,7 +63,17 @@ function createFakeClient(assistantText: string): OpencodeClient {
           ],
         }
       },
-      async promptAsync() {
+      async promptAsync(opts: {
+        path?: { id?: string }
+        body?: { parts?: Array<{ text?: string }> }
+      }) {
+        const sessionId = opts?.path?.id ?? ""
+        if (coordinatorPosts && sessionId.startsWith("ses_coord_")) {
+          coordinatorPosts.push({
+            sessionId,
+            text: opts?.body?.parts?.[0]?.text ?? "",
+          })
+        }
         return {}
       },
     },
@@ -75,7 +98,7 @@ return { r }`
 
 describe("WorkflowManager", () => {
   describe("#given a valid script", () => {
-    test("#then start returns a pending run with an id", () => {
+    test("#then start returns a pending run with an id and coordinator session", async () => {
       // given
       const { manager: bg } = createFakeBackgroundManager()
       const wm = new WorkflowManager({
@@ -86,7 +109,7 @@ describe("WorkflowManager", () => {
       })
 
       // when
-      const run = wm.start({
+      const run = await wm.start({
         script: VALID_SCRIPT,
         parentSessionID: "ses_parent",
         parentMessageID: "msg_1",
@@ -95,7 +118,8 @@ describe("WorkflowManager", () => {
       // then
       expect(run.id).toMatch(/^wf_/)
       expect(run.meta.name).toBe("demo")
-      expect(["pending", "running"]).toContain(run.status)
+      expect(["pending", "running", "completed"]).toContain(run.status)
+      expect(run.coordinatorSessionId).toBe("ses_coord_1")
     })
 
     test("#then the run completes with the script result", async () => {
@@ -109,7 +133,7 @@ describe("WorkflowManager", () => {
       })
 
       // when
-      const run = wm.start({
+      const run = await wm.start({
         script: VALID_SCRIPT,
         parentSessionID: "ses_parent",
         parentMessageID: "msg_1",
@@ -137,7 +161,7 @@ describe("WorkflowManager", () => {
       })
 
       // when
-      const run = wm.start({
+      const run = await wm.start({
         script: VALID_SCRIPT,
         parentSessionID: "ses_parent",
         parentMessageID: "msg_1",
@@ -152,7 +176,7 @@ describe("WorkflowManager", () => {
   })
 
   describe("#given an invalid script", () => {
-    test("#then start throws", () => {
+    test("#then start rejects", async () => {
       // given
       const { manager: bg } = createFakeBackgroundManager()
       const wm = new WorkflowManager({
@@ -163,13 +187,13 @@ describe("WorkflowManager", () => {
       })
 
       // when / then
-      expect(() =>
+      await expect(
         wm.start({
           script: "const meta = {}",
           parentSessionID: "ses_parent",
           parentMessageID: "msg_1",
         }),
-      ).toThrow()
+      ).rejects.toThrow()
     })
   })
 
@@ -185,13 +209,43 @@ describe("WorkflowManager", () => {
       })
 
       // when
-      const runA = wm.start({ script: VALID_SCRIPT, parentSessionID: "ses_a", parentMessageID: "m" })
-      wm.start({ script: VALID_SCRIPT, parentSessionID: "ses_b", parentMessageID: "m" })
+      const runA = await wm.start({ script: VALID_SCRIPT, parentSessionID: "ses_a", parentMessageID: "m" })
+      await wm.start({ script: VALID_SCRIPT, parentSessionID: "ses_b", parentMessageID: "m" })
       await waitForTerminal(wm, runA.id)
 
       // then
       expect(wm.listRuns("ses_a").map((run) => run.id)).toContain(runA.id)
       expect(wm.listRuns("ses_a").every((run) => run.parentSessionID === "ses_a")).toBe(true)
+    })
+  })
+
+  describe("#given coordinator progress pushes", () => {
+    test("#then no two consecutive coordinator messages are identical", async () => {
+      // given
+      const { manager: bg } = createFakeBackgroundManager()
+      const posts: CoordinatorPost[] = []
+      const wm = new WorkflowManager({
+        client: createFakeClient("subagent output", posts),
+        backgroundManager: bg,
+        directory: "/tmp",
+        enableParentNotifications: false,
+      })
+
+      // when
+      const run = await wm.start({
+        script: VALID_SCRIPT,
+        parentSessionID: "ses_parent",
+        parentMessageID: "msg_1",
+      })
+      await waitForTerminal(wm, run.id)
+      // let the serialized push chain drain
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      // then - at least one board was pushed, and never the same text twice in a row
+      expect(posts.length).toBeGreaterThan(0)
+      for (let i = 1; i < posts.length; i++) {
+        expect(posts[i].text).not.toBe(posts[i - 1].text)
+      }
     })
   })
 })

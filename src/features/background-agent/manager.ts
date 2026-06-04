@@ -335,6 +335,7 @@ export class BackgroundManager {
         fallbackChain: input.fallbackChain,
         attemptCount: 0,
         category: input.category,
+        suppressParentNotification: input.suppressParentNotification,
       }
 
       this.tasks.set(task.id, task)
@@ -1695,9 +1696,10 @@ export class BackgroundManager {
 
     log("[background-agent] notifyParentSession called for task:", task.id)
 
-    // Show toast notification
+    // Show toast notification (suppressed for orchestrator-driven tasks such as
+    // dynamic-workflow subagents, which render their own consolidated progress UI)
     const toastManager = getTaskToastManager()
-    if (toastManager) {
+    if (toastManager && !task.suppressParentNotification) {
       toastManager.showCompletionToast({
         id: task.id,
         description: task.description,
@@ -1761,7 +1763,7 @@ export class BackgroundManager {
       let model: { providerID: string; modelID: string } | undefined
       let tools: Record<string, boolean> | undefined = task.parentTools
 
-      if (this.enableParentSessionNotifications) {
+      if (this.enableParentSessionNotifications && !task.suppressParentNotification) {
         try {
           const messagesResp = await this.client.session.messages({ path: { id: task.parentSessionID } })
           const messages = normalizeSDKResponse(messagesResp, [] as Array<{

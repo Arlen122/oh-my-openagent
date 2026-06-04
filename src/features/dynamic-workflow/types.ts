@@ -59,6 +59,8 @@ export interface WorkflowRun {
   durationMs?: number
   toolCallID?: string
   childTaskIds: string[]
+  /** Dedicated coordinator session that the workflow tool card links to (click-into target in the TUI) */
+  coordinatorSessionId?: string
 }
 
 export interface WorkflowAgentRunOptions {

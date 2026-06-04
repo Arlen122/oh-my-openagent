@@ -21,6 +21,27 @@ export interface NotifyWorkflowOptions {
   enableParentNotifications: boolean
 }
 
+/**
+ * Show a toast when a workflow starts. The OpenCode TUI only renders a clickable
+ * card for the built-in `task` tool, so the workflow card itself is not
+ * clickable; this toast tells the user to open the progress session via /session.
+ */
+export function notifyWorkflowStarted(client: OpencodeClient, run: WorkflowRun): void {
+  const tuiClient = client as ClientWithTui
+  if (!tuiClient.tui?.showToast) return
+
+  tuiClient.tui
+    .showToast({
+      body: {
+        title: "工作流已启动",
+        message: `"${run.meta.name}" 运行中。输入 /session 打开名为「工作流: ${run.meta.name}」的会话查看实时进度。`,
+        variant: "success",
+        duration: 6000,
+      },
+    })
+    .catch(() => {})
+}
+
 export function buildWorkflowNotificationText(run: WorkflowRun): string {
   const statusLabel =
     run.status === "completed"

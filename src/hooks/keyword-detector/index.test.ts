@@ -4,6 +4,7 @@ import { setMainSession, updateSessionAgent, clearSessionAgent, _resetForTesting
 import { ContextCollector } from "../../features/context-injector"
 import * as sharedModule from "../../shared"
 import * as sessionState from "../../features/claude-code-session-state"
+import { OMO_INTERNAL_INITIATOR_MARKER } from "../../shared/internal-initiator-marker"
 
 describe("keyword-detector message transform", () => {
   let logCalls: Array<{ msg: string; data?: unknown }>
@@ -126,6 +127,34 @@ describe("keyword-detector session filtering", () => {
       },
     } as any
   }
+
+  test("should skip workflow keywords in non-main session (using mainSessionID check)", async () => {
+    // given - main session is set, subagent session mentions workflow
+    const mainSessionID = "main-123"
+    const subagentSessionID = "subagent-456"
+    setMainSession(mainSessionID)
+
+    const hook = createKeywordDetectorHook(createMockPluginInput())
+    const output = {
+      message: {} as Record<string, unknown>,
+      parts: [{ type: "text", text: "run a workflow for this task" }],
+    }
+
+    // when - non-main session triggers workflow keyword
+    await hook["chat.message"](
+      { sessionID: subagentSessionID },
+      output,
+    )
+
+    // then - workflow keyword should be filtered out (main-session only)
+    const textPart = output.parts.find((p) => p.type === "text")
+    expect(textPart!.text).toBe("run a workflow for this task")
+    expect(textPart!.text).not.toContain("[workflow-mode]")
+    const skipLog = logCalls.find((c) =>
+      c.msg.includes("Skipping non-ultrawork keywords in non-main session"),
+    )
+    expect(skipLog).toBeDefined()
+  })
 
   test("should skip non-ultrawork keywords in non-main session (using mainSessionID check)", async () => {
     // given - main session is set, different session submits search keyword
@@ -500,6 +529,32 @@ System will search and find files.
     expect(textPart!.text).not.toContain("[search-mode]")
   })
 
+  test("should NOT trigger workflow mode from keywords inside <system-reminder> tags", async () => {
+    // given - message contains workflow keywords only inside system-reminder tags
+    const collector = new ContextCollector()
+    const hook = createKeywordDetectorHook(createMockPluginInput(), collector)
+    const sessionID = "test-session"
+    const output = {
+      message: {} as Record<string, unknown>,
+      parts: [{
+        type: "text",
+        text: `<system-reminder>
+Use workflow_output to inspect the dynamic workflow progress board.
+The workflow tool orchestrates subagents in the background.
+</system-reminder>`,
+      }],
+    }
+
+    // when - keyword detection runs on system-reminder content
+    await hook["chat.message"]({ sessionID }, output)
+
+    // then - should NOT trigger workflow mode
+    const textPart = output.parts.find((p) => p.type === "text")
+    expect(textPart).toBeDefined()
+    expect(textPart!.text).not.toContain("[workflow-mode]")
+    expect(textPart!.text).toContain("<system-reminder>")
+  })
+
   test("should handle multiline system-reminder content with search keywords", async () => {
     // given - system-reminder with multiline content containing various search keywords
     const collector = new ContextCollector()
@@ -850,5 +905,63 @@ describe("keyword-detector non-OMO agent skipping", () => {
     expect(textPart).toBeDefined()
     expect(textPart!.text).toBe("search this codebase")
     expect(textPart!.text).not.toContain("[search-mode]")
+  })
+})
+
+describe("keyword-detector internal-initiator filtering", () => {
+  let logCalls: Array<{ msg: string; data?: unknown }>
+  let logSpy: ReturnType<typeof spyOn>
+
+  beforeEach(() => {
+    _resetForTesting()
+    logCalls = []
+    logSpy = spyOn(sharedModule, "log").mockImplementation((msg: string, data?: unknown) => {
+      logCalls.push({ msg, data })
+    })
+  })
+
+  afterEach(() => {
+    logSpy?.mockRestore()
+    _resetForTesting()
+  })
+
+  function createMockPluginInput() {
+    return {
+      client: {
+        tui: {
+          showToast: async () => {},
+        },
+      },
+    } as any
+  }
+
+  test("should NOT trigger workflow mode on oh-my-opencode internal notifications", async () => {
+    // given - simulated workflow completion notification injected by the plugin
+    const mainSessionID = "main-workflow-notify"
+    setMainSession(mainSessionID)
+
+    const hook = createKeywordDetectorHook(createMockPluginInput())
+    const output = {
+      message: {} as Record<string, unknown>,
+      parts: [{
+        type: "text",
+        text: `[WORKFLOW COMPLETED] demo
+Run ID: wf_abc123
+Use workflow_output(run_id="wf_abc123") for the full result.
+${OMO_INTERNAL_INITIATOR_MARKER}`,
+      }],
+    }
+
+    // when - internal notification passes through chat.message
+    await hook["chat.message"]({ sessionID: mainSessionID }, output)
+
+    // then - should skip entirely, no workflow-mode injection
+    const textPart = output.parts.find((p) => p.type === "text")
+    expect(textPart!.text).not.toContain("[workflow-mode]")
+    expect(textPart!.text).toContain("[WORKFLOW COMPLETED]")
+    const skipLog = logCalls.find((c) =>
+      c.msg.includes("Skipping internal-initiator message"),
+    )
+    expect(skipLog).toBeDefined()
   })
 })

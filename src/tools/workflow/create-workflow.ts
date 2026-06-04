@@ -58,7 +58,7 @@ export function createWorkflowTool(manager: WorkflowManager, client: OpencodeCli
 
       let run
       try {
-        run = manager.start({
+        run = await manager.start({
           script,
           args: rawArgs.args,
           parentSessionID: parentContext.sessionID,
@@ -81,15 +81,19 @@ export function createWorkflowTool(manager: WorkflowManager, client: OpencodeCli
 
       const runInBackground = rawArgs.run_in_background !== false
       if (runInBackground) {
-        const phaseOutline = run.phases.length > 0 ? `\nPlanned phases: ${run.phases.join(" -> ")}` : ""
-        return `Workflow launched.
+        const phaseOutline = run.phases.length > 0 ? `\n计划阶段：${run.phases.join(" -> ")}` : ""
+        const sessionTitle = `工作流: ${run.meta.name}`
+        const progressView = run.coordinatorSessionId
+          ? `\n\n[MANDATORY] You MUST now tell the user, in their language, that they can watch live progress by running the /session command and opening the "${sessionTitle}" session. Each subagent's full result is also pushed there as it finishes.
+Note: the workflow tool card itself is not click-navigable (OpenCode TUI only makes the built-in task tool clickable), so /session is the way in.`
+          : ""
+        return `工作流已启动。
 
-Workflow: ${run.meta.name}
-Run ID: ${run.id}
-Description: ${run.meta.description}${phaseOutline}
+工作流：${run.meta.name}
+运行 ID：${run.id}
+描述：${run.meta.description}${phaseOutline}
 
-The workflow runs in the background. The system notifies you when it finishes.
-Use \`workflow_output\` with run_id="${run.id}" to inspect progress or the final result.`
+[IMPORTANT] The workflow runs in the background. Do NOT call workflow_output in a blocking loop and do NOT use block=true to wait. STOP here and wait for the automatic completion notification that will arrive in this session. Only call workflow_output(run_id="${run.id}") if the user explicitly asks for status mid-run.${progressView}`
       }
 
       const finalRun = await waitForTerminal(manager, run.id, ctx.abort)

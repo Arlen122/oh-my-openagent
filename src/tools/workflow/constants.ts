@@ -10,12 +10,15 @@ export const WORKFLOW_PROMPT_GUIDELINES = [
   "Failed agent()/parallel()/pipeline() branches return null and log the failure unless the run is aborted. Check for null before synthesizing conclusions.",
   "For machine-readable subagent output, pass a plain JSON Schema via opts.schema; the subagent returns the parsed object. Use JSON Schema syntax, not TypeScript.",
   "Subagents do not share the parent's code context. Include enough task context and relevant paths in each agent prompt.",
-  "Workflows run in the background by default. The system notifies the parent session when the run finishes; use workflow_output to inspect progress or the final result.",
+  "Workflows run in the background by default. After launching, do NOT poll workflow_output in a blocking loop and do NOT call workflow_output with block=true just to wait; that wastes turns. STOP and wait for the system's completion notification, which arrives automatically in this session.",
+  "After launching a background workflow, you MUST tell the user (in their language) how to watch progress: open the session named '工作流: <name>' via the /session command in the TUI to see the live checkbox progress board. This instruction to the user is mandatory on every launch.",
+  "Only call workflow_output when the user explicitly asks for current status mid-run; otherwise rely on the completion notification.",
 ].join(" ")
 
 export const WORKFLOW_DESCRIPTION = [
   "Execute a deterministic JavaScript workflow that orchestrates many subagents with agent(), parallel(), and pipeline().",
   "The workflow runs in the background by default and returns a run_id immediately; the session stays responsive.",
+  "After launching: do NOT block on workflow_output - wait for the automatic completion notification, and you MUST tell the user they can watch live progress via the /session command (open the '工作流: <name>' session).",
   "`script` is required raw JavaScript that must start with `export const meta = { name, description }` and must call agent() at least once.",
   WORKFLOW_PROMPT_GUIDELINES,
 ].join("\n\n")

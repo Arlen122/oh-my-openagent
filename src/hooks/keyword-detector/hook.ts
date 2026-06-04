@@ -6,6 +6,7 @@ import {
   isSystemDirective,
   removeSystemReminders,
 } from "../../shared/system-directive"
+import { OMO_INTERNAL_INITIATOR_MARKER } from "../../shared/internal-initiator-marker"
 import {
   getMainSessionID,
   getSessionAgent,
@@ -43,6 +44,15 @@ export function createKeywordDetectorHook(ctx: PluginInput, _collector?: Context
         return
       }
 
+      // Skip oh-my-opencode's own injected messages (background-task / workflow
+      // notifications, coordinator progress boards, etc). These carry the
+      // internal-initiator marker and frequently contain words like "workflow"
+      // that would otherwise re-trigger keyword injection on system content.
+      if (promptText.includes(OMO_INTERNAL_INITIATOR_MARKER)) {
+        log(`[keyword-detector] Skipping internal-initiator message`, { sessionID: input.sessionID })
+        return
+      }
+
       const currentAgent = getSessionAgent(input.sessionID) ?? input.agent
 
       // Skip all keyword injection for non-OMO agents (e.g., OpenCode-Builder, Plan)
@@ -77,6 +87,8 @@ export function createKeywordDetectorHook(ctx: PluginInput, _collector?: Context
       const mainSessionID = getMainSessionID()
       const isNonMainSession = mainSessionID && input.sessionID !== mainSessionID
 
+      // search / analyze / workflow only fire on the main session (like ultrawork is
+      // the only keyword allowed to propagate into subagent sessions).
       if (isNonMainSession) {
         detectedKeywords = detectedKeywords.filter((k) => k.type === "ultrawork")
         if (detectedKeywords.length === 0) {

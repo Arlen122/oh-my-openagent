@@ -62,6 +62,9 @@ export interface BackgroundTask {
   /** Category used for this task (e.g., 'quick', 'visual-engineering') */
   category?: string
 
+  /** Suppress the per-task parent-session toast and prompt injection (used by orchestrators like dynamic workflow that drive their own progress UI) */
+  suppressParentNotification?: boolean
+
   /** Last message count for stability detection */
   lastMsgCount?: number
   /** Number of consecutive polls with stable message count */
@@ -87,6 +90,8 @@ export interface LaunchInput {
   skillContent?: string
   category?: string
   sessionPermission?: SessionPermissionRule[]
+  /** Suppress the per-task parent-session toast and prompt injection */
+  suppressParentNotification?: boolean
 }
 
 export interface ResumeInput {
