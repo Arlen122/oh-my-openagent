@@ -70,6 +70,30 @@ describe("parseWorkflowScript", () => {
       // when / then
       expect(() => parseWorkflowScript(script)).toThrow()
     })
+
+    test("#then rejects phase({ title: '...' }) object form", () => {
+      // given
+      const script = `export const meta = { name: 'a', description: 'b' }\nphase({ title: 'Scan' })`
+
+      // when / then
+      expect(() => parseWorkflowScript(script)).toThrow(/phase\(\) must be called with a string title/)
+    })
+
+    test("#then rejects phase() with a variable title", () => {
+      // given
+      const script = `export const meta = { name: 'a', description: 'b' }\nconst t = 'Scan'\nphase(t)`
+
+      // when / then
+      expect(() => parseWorkflowScript(script)).toThrow(/string literal title/)
+    })
+
+    test("#then accepts phase('Scan') string literal form", () => {
+      // given
+      const script = `export const meta = { name: 'a', description: 'b' }\nphase('Scan')\nawait agent('go', { label: 'x' })`
+
+      // when / then
+      expect(() => parseWorkflowScript(script)).not.toThrow()
+    })
   })
 })
 

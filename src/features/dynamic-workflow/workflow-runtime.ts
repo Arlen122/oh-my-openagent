@@ -236,6 +236,7 @@ export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body:
   }) as unknown as AnyNode
 
   assertDeterministicAst(ast)
+  assertPhaseCallFormat(ast)
 
   const first = (ast.body as AnyNode[] | undefined)?.[0]
   if (first?.type !== "ExportNamedDeclaration") {
@@ -327,6 +328,37 @@ function assertDeterministicAst(node: AnyNode): void {
     throw new Error(WORKFLOW_NONDETERMINISM_ERROR)
   }
   for (const child of astChildren(node)) assertDeterministicAst(child)
+}
+
+function assertPhaseCallFormat(node: AnyNode): void {
+  if (node.type === "CallExpression") {
+    const callee = node.callee as AnyNode
+    if (callee?.type === "Identifier" && callee.name === "phase") {
+      validatePhaseCallArguments(node.arguments as AnyNode[])
+    }
+  }
+  for (const child of astChildren(node)) assertPhaseCallFormat(child)
+}
+
+function validatePhaseCallArguments(args: AnyNode[]): void {
+  if (args.length !== 1) {
+    throw new Error("phase() takes exactly one argument: phase('Title')")
+  }
+  const arg = args[0]
+  if (!arg) {
+    throw new Error("phase() requires a non-empty string literal title: phase('Scan')")
+  }
+  if (arg.type === "ObjectExpression") {
+    throw new Error(
+      "phase() must be called with a string title: phase('Scan'), not phase({ title: 'Scan' }). The { title: '...' } object form is only for meta.phases, not for phase() calls.",
+    )
+  }
+  const title = staticStringOf(arg)
+  if (title === undefined || title.trim() === "") {
+    throw new Error(
+      "phase() requires a non-empty string literal title: phase('Scan'). Do not pass variables, expressions, or objects.",
+    )
+  }
 }
 
 function astChildren(node: AnyNode): AnyNode[] {
