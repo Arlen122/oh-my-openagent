@@ -451,6 +451,7 @@ Commands are slash-triggered workflows that execute predefined templates.
 | `/start-work`        | Start Sisyphus work session from Prometheus plan                                           |
 | `/stop-continuation` | Stop all continuation mechanisms (ralph loop, todo continuation, boulder) for this session |
 | `/handoff`           | Create a detailed context summary for continuing work in a new session                     |
+| `/workflow`          | Turn the user's request into a dynamic workflow script and launch it via the `workflow` tool |
 
 ### /init-deep
 
@@ -591,6 +592,9 @@ Load custom commands from:
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **call_omo_agent**    | Spawn explore/librarian agents. Supports `run_in_background`.                                                                                                                                                                           |
 | **task**              | Category-based task delegation. Supports built-in categories like `visual-engineering`, `ultrabrain`, `deep`, `artistry`, `quick`, `unspecified-low`, `unspecified-high`, and `writing`, or direct agent targeting via `subagent_type`. |
+| **workflow**          | Script-driven multi-subagent orchestration. JavaScript `agent()` / `parallel()` / `pipeline()` with per-step `subagent_type` and `model` overrides. Runs in background by default. See [Dynamic Workflow Guide](../guide/dynamic-workflow.md). |
+| **workflow_output**   | Inspect a workflow run's status, phases, per-agent progress, and final result.                                                                                                                                                          |
+| **workflow_cancel**   | Cancel a running workflow by `run_id`, or all active runs in the session with `all=true`.                                                                                                                                               |
 | **background_output** | Retrieve background task results                                                                                                                                                                                                        |
 | **background_cancel** | Cancel running background tasks                                                                                                                                                                                                         |
 

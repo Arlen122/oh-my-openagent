@@ -524,9 +524,20 @@ Type `exit` or start a new session. Atlas is primarily entered via `/start-work`
 
 ---
 
+## Dynamic Workflow (Script Orchestration)
+
+For large fan-out tasks where steps are already known, use **Dynamic Workflow** instead of round-by-round `task` delegation. Write a JavaScript script with `agent()`, `parallel()`, and `pipeline()`; assign each step a `subagent_type` (e.g. `explore`, `oracle`) and optionally override `model` per step (e.g. `openai/gpt-5.4 xhigh`).
+
+Trigger via `/workflow`, keywords `workflow` / `ultracode`, or direct `workflow` tool invocation. Progress lives in a coordinator session opened with `/session`.
+
+See the full guide: [Dynamic Workflow Guide](./dynamic-workflow.md).
+
+---
+
 ## Further Reading
 
 - [Overview](./overview.md)
+- [Dynamic Workflow Guide](./dynamic-workflow.md)
 - [Features Reference](../reference/features.md)
 - [Configuration Reference](../reference/configuration.md)
 - [Manifesto](../manifesto.md)
