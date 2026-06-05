@@ -29,7 +29,9 @@ export function createWorkflowTool(manager: WorkflowManager, client: OpencodeCli
       args: tool.schema
         .any()
         .optional()
-        .describe("Optional JSON value exposed to the workflow script as the global `args`."),
+        .describe(
+          "Optional JSON object passed into the workflow script as the global `args` (e.g. { dirs: ['src/'], focus: 'security' }). Use to parameterize reusable scripts; omit when all inputs are hardcoded in the script.",
+        ),
       run_in_background: tool.schema
         .boolean()
         .optional()
