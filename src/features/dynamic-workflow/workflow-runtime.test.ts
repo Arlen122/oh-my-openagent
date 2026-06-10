@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { WORKFLOW_SLEEP_MAX_MS } from "./constants"
 import { parseWorkflowScript, runWorkflow } from "./workflow-runtime"
 import type { WorkflowAgentRunner } from "./types"
 
@@ -206,6 +207,91 @@ return true`
 
       // then
       expect(result.phases).toEqual(["Scan", "Analyze"])
+    })
+  })
+
+  describe("#given sleep", () => {
+    test("#then delays between steps", async () => {
+      // given
+      const script = `export const meta = { name: 'a', description: 'b' }
+await sleep(40)
+return 'done'`
+
+      // when
+      const started = Date.now()
+      const result = await runWorkflow(script, { agent: stubRunner(() => "ok") })
+      const elapsed = Date.now() - started
+
+      // then
+      expect(result.result).toBe("done")
+      expect(elapsed).toBeGreaterThanOrEqual(30)
+    })
+
+    test("#then aborts an in-flight sleep", async () => {
+      // given
+      const controller = new AbortController()
+      const script = `export const meta = { name: 'a', description: 'b' }
+await sleep(5000)
+return true`
+      setTimeout(() => controller.abort(), 30)
+
+      // when / then
+      await expect(
+        runWorkflow(script, { agent: stubRunner(() => "ok"), signal: controller.signal }),
+      ).rejects.toThrow(/abort/)
+    })
+
+    test("#then rejects per-call sleep above the cap", async () => {
+      // given
+      const script = `export const meta = { name: 'a', description: 'b' }
+await sleep(${WORKFLOW_SLEEP_MAX_MS + 1})
+return true`
+
+      // when / then
+      await expect(runWorkflow(script, { agent: stubRunner(() => "ok") })).rejects.toThrow(/per-call maximum/)
+    })
+
+    test("#then rejects total sleep above the budget", async () => {
+      // given
+      const script = `export const meta = { name: 'a', description: 'b' }
+await sleep(30)
+await sleep(30)
+return true`
+
+      // when / then
+      await expect(
+        runWorkflow(script, {
+          agent: stubRunner(() => "ok"),
+          sleepTotalMaxMs: 50,
+        }),
+      ).rejects.toThrow(/total sleep budget/)
+    })
+  })
+
+  describe("#given a polling loop with sleep", () => {
+    test("#then checks repeatedly until a terminal status", async () => {
+      // given
+      const script = `export const meta = { name: 'a', description: 'b' }
+const schema = { type: 'object', properties: { status: { type: 'string' } }, required: ['status'] }
+let status = 'running'
+for (let i = 0; i < 5 && status === 'running'; i++) {
+  const check = await agent('poll', { label: 'poll ' + (i + 1), schema })
+  status = check.status
+  if (status === 'running' && i < 4) await sleep(10)
+}
+return { status, checks: 3 }`
+      let calls = 0
+      const runner = stubRunner(() => {
+        calls++
+        return calls < 3 ? { status: "running" } : { status: "success" }
+      })
+
+      // when
+      const result = await runWorkflow(script, { agent: runner })
+
+      // then
+      expect(result.result).toEqual({ status: "success", checks: 3 })
+      expect(calls).toBe(3)
     })
   })
 

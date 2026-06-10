@@ -24,7 +24,7 @@ export function createWorkflowTool(manager: WorkflowManager, client: OpencodeCli
       script: tool.schema
         .string()
         .describe(
-          "Raw JavaScript workflow script (no Markdown fences). First statement: export const meta = { name, description }. Must call agent() at least once.",
+          "Raw JavaScript workflow script (no Markdown fences). First statement: export const meta = { name, description }. Must call agent() at least once. FORBIDDEN (parse fails): Date.now(), new Date(), Math.random() — use agent()+schema for current time or external status checks.",
         ),
       args: tool.schema
         .any()

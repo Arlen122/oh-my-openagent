@@ -17,7 +17,9 @@ When to use the workflow tool:
 How to use it:
 - Call the workflow tool with a single raw JavaScript string in \`script\`.
 - First statement MUST be \`export const meta = { name: 'short_snake_case', description: '...' }\`.
-- Use phase(title), agent(prompt, { label }), parallel(thunks), pipeline(items, ...stages). Call agent() at least once.
+- Use phase('Title') (string literal), agent(prompt, { label }), parallel(thunks), pipeline(items, ...stages), sleep(ms) for poll intervals. Call agent() at least once.
+- NEVER use Date.now(), new Date(), or Math.random() in the script — parse fails before run. For time/status polling, use agent()+schema; subagent reads clocks/APIs via tools.
+- For polling (CI pipelines, wait-until-time, etc.): bounded for-loop with agent() checks + sleep(intervalMs); stop when schema field matches (e.g. reached:true or status:'success').
 - The script MUST end with an explicit \`return\` of the final deliverable (aggregated subagent outputs). Without \`return\`, the completion summary is empty.
 - The run executes in the background; the system notifies you on completion. Use workflow_output to inspect progress or results.
 

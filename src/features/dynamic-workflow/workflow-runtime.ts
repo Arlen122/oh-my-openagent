@@ -6,6 +6,8 @@ import {
   WORKFLOW_DEFAULT_MAX_CONCURRENCY,
   WORKFLOW_MAX_CONCURRENCY_CAP,
   WORKFLOW_NONDETERMINISM_ERROR,
+  WORKFLOW_SLEEP_MAX_MS,
+  WORKFLOW_SLEEP_TOTAL_MAX_MS,
 } from "./constants"
 import type {
   WorkflowAgentRunner,
@@ -23,6 +25,10 @@ export interface RunWorkflowOptions {
   concurrency?: number
   maxAgents?: number
   tokenBudget?: number | null
+  /** Override per-call sleep() cap (default WORKFLOW_SLEEP_MAX_MS). */
+  sleepPerCallMaxMs?: number
+  /** Override total sleep() budget per run (default WORKFLOW_SLEEP_TOTAL_MAX_MS). */
+  sleepTotalMaxMs?: number
   signal?: AbortSignal
   onLog?: (message: string) => void
   onPhase?: (title: string) => void
@@ -44,6 +50,7 @@ interface RuntimeState {
   phases: string[]
   agentCount: number
   spent: number
+  totalSleepMs: number
 }
 
 export async function runWorkflow<T = unknown>(
@@ -52,7 +59,7 @@ export async function runWorkflow<T = unknown>(
 ): Promise<WorkflowRunResult<T>> {
   const started = Date.now()
   const { meta, body } = parseWorkflowScript(script)
-  const state: RuntimeState = { logs: [], phases: [], agentCount: 0, spent: 0 }
+  const state: RuntimeState = { logs: [], phases: [], agentCount: 0, spent: 0, totalSleepMs: 0 }
   const agentRunner = options.agent
   const maxAgents = options.maxAgents ?? WORKFLOW_DEFAULT_MAX_AGENTS_PER_RUN
   const concurrency = Math.max(
@@ -84,6 +91,23 @@ export async function runWorkflow<T = unknown>(
 
   const throwIfAborted = () => {
     if (options.signal?.aborted) throw new Error("workflow aborted")
+  }
+
+  const sleepPerCallMaxMs = options.sleepPerCallMaxMs ?? WORKFLOW_SLEEP_MAX_MS
+  const sleepTotalMaxMs = options.sleepTotalMaxMs ?? WORKFLOW_SLEEP_TOTAL_MAX_MS
+
+  const sleep = async (ms: unknown) => {
+    throwIfAborted()
+    const duration = requirePositiveFiniteNumber(ms, "sleep duration")
+    if (duration > sleepPerCallMaxMs) {
+      throw new Error(`sleep() exceeds per-call maximum of ${sleepPerCallMaxMs}ms`)
+    }
+    if (state.totalSleepMs + duration > sleepTotalMaxMs) {
+      throw new Error(`workflow exceeded total sleep budget of ${sleepTotalMaxMs}ms`)
+    }
+    state.totalSleepMs += duration
+    await delayWithAbort(duration, options.signal)
+    throwIfAborted()
   }
 
   const agent = async (prompt: unknown, agentOptions: unknown = {}) => {
@@ -187,6 +211,7 @@ export async function runWorkflow<T = unknown>(
     pipeline,
     log,
     phase,
+    sleep,
     args: options.args,
     cwd,
     process: Object.freeze({ cwd: () => cwd }),
@@ -462,6 +487,39 @@ function createLimiter(limit: number) {
 function requireString(value: unknown, name: string): string {
   if (typeof value !== "string") throw new TypeError(`${name} must be a string`)
   return value
+}
+
+function requirePositiveFiniteNumber(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new TypeError(`${name} must be a non-negative finite number of milliseconds`)
+  }
+  return value
+}
+
+function delayWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("workflow aborted"))
+      return
+    }
+
+    const timer = setTimeout(() => {
+      cleanup()
+      resolve()
+    }, ms)
+
+    const onAbort = () => {
+      cleanup()
+      reject(new Error("workflow aborted"))
+    }
+
+    const cleanup = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener("abort", onAbort)
+    }
+
+    signal?.addEventListener("abort", onAbort, { once: true })
+  })
 }
 
 function optionalString(value: unknown, name: string): string | undefined {
