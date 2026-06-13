@@ -1,11 +1,13 @@
 import { tool, type PluginInput, type ToolDefinition } from "@opencode-ai/plugin"
 import type { WorkflowManager } from "../../features/dynamic-workflow"
 import { storeToolMetadata } from "../../features/tool-metadata-store"
-import { resolveParentContext } from "../delegate-task/executor"
-import type { ToolContextWithMetadata } from "../delegate-task/types"
-import { log } from "../../shared/logger"
 import { WORKFLOW_DESCRIPTION } from "./constants"
 import { buildRunMetadata, formatRunResult, resolveToolCallID } from "./format"
+import {
+  formatWorkflowStartResponse,
+  resolveWorkflowParentContext,
+  waitForTerminal,
+} from "./workflow-tool-shared"
 import type { WorkflowToolArgs, WorkflowToolContext } from "./types"
 
 type OpencodeClient = PluginInput["client"]
@@ -23,8 +25,21 @@ export function createWorkflowTool(manager: WorkflowManager, client: OpencodeCli
     args: {
       script: tool.schema
         .string()
+        .optional()
         .describe(
-          "Raw JavaScript workflow script (no Markdown fences). First statement: export const meta = { name, description }. Must call agent() at least once. FORBIDDEN (parse fails): Date.now(), new Date(), Math.random() — use agent()+schema for current time or external status checks.",
+          "Raw JavaScript workflow script (no Markdown fences). First statement: export const meta = { name, description }. Must call agent() at least once. FORBIDDEN (parse fails): Date.now(), new Date(), Math.random(). Provide script, script_path, or resume_from.",
+        ),
+      script_path: tool.schema
+        .string()
+        .optional()
+        .describe(
+          "Path to a workflow script file relative to the project directory (e.g. .opencode/workflows/inspect.js). Mutually usable with args; do not also pass inline script unless overriding a resume.",
+        ),
+      resume_from: tool.schema
+        .string()
+        .optional()
+        .describe(
+          "Resume by run_id. Works for error/cancelled runs, or running/pending checkpoints after process/session interrupt.",
         ),
       args: tool.schema
         .any()
@@ -39,29 +54,20 @@ export function createWorkflowTool(manager: WorkflowManager, client: OpencodeCli
     },
     async execute(rawArgs: WorkflowToolArgs, toolContext) {
       const ctx = toolContext as WorkflowToolContext
-      const script = normalizeScript(rawArgs.script)
-
-      let parentContext: Awaited<ReturnType<typeof resolveParentContext>>
-      try {
-        parentContext = await resolveParentContext(ctx as unknown as ToolContextWithMetadata, client)
-      } catch (error) {
-        log("[workflow] Failed to resolve parent context, falling back to ctx:", {
-          error: error instanceof Error ? error.message : String(error),
-        })
-        parentContext = {
-          sessionID: ctx.sessionID,
-          messageID: ctx.messageID,
-          agent: ctx.agent,
-          model: undefined,
-        }
+      if (!rawArgs.script?.trim() && !rawArgs.script_path?.trim() && !rawArgs.resume_from?.trim()) {
+        return "[ERROR] workflow requires one of: script, script_path, resume_from"
       }
 
+      const script = rawArgs.script ? normalizeScript(rawArgs.script) : undefined
+      const parentContext = await resolveWorkflowParentContext(ctx, client)
       const callID = resolveToolCallID(ctx)
 
       let run
       try {
         run = await manager.start({
           script,
+          scriptPath: rawArgs.script_path?.trim(),
+          resumeFromRunId: rawArgs.resume_from?.trim(),
           args: rawArgs.args,
           parentSessionID: parentContext.sessionID,
           parentMessageID: parentContext.messageID,
@@ -83,19 +89,7 @@ export function createWorkflowTool(manager: WorkflowManager, client: OpencodeCli
 
       const runInBackground = rawArgs.run_in_background !== false
       if (runInBackground) {
-        const phaseOutline = run.phases.length > 0 ? `\n计划阶段：${run.phases.join(" -> ")}` : ""
-        const sessionTitle = `工作流: ${run.meta.name}`
-        const progressView = run.coordinatorSessionId
-          ? `\n\n[MANDATORY] You MUST now tell the user, in their language, that they can watch live progress by running the /session command and opening the "${sessionTitle}" session. Each subagent's full result is also pushed there as it finishes.
-Note: the workflow tool card itself is not click-navigable (OpenCode TUI only makes the built-in task tool clickable), so /session is the way in.`
-          : ""
-        return `工作流已启动。
-
-工作流：${run.meta.name}
-运行 ID：${run.id}
-描述：${run.meta.description}${phaseOutline}
-
-[IMPORTANT] The workflow runs in the background. Do NOT call workflow_output in a blocking loop and do NOT use block=true to wait. STOP here and wait for the automatic completion notification that will arrive in this session. Only call workflow_output(run_id="${run.id}") if the user explicitly asks for status mid-run.${progressView}`
+        return formatWorkflowStartResponse(run)
       }
 
       const finalRun = await waitForTerminal(manager, run.id, ctx.abort)
@@ -107,25 +101,4 @@ Note: the workflow tool card itself is not click-navigable (OpenCode TUI only ma
       return formatRunResult(finalRun)
     },
   })
-}
-
-async function waitForTerminal(
-  manager: WorkflowManager,
-  runId: string,
-  abort?: AbortSignal,
-) {
-  while (true) {
-    const run = manager.getRun(runId)
-    if (!run) throw new Error(`Workflow run disappeared: ${runId}`)
-    if (run.status === "completed" || run.status === "error" || run.status === "cancelled") {
-      return run
-    }
-    if (abort?.aborted) {
-      await manager.cancel(runId)
-      const cancelled = manager.getRun(runId)
-      if (cancelled) return cancelled
-      throw new Error(`Workflow run disappeared: ${runId}`)
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-  }
 }

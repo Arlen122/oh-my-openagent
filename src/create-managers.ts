@@ -90,8 +90,10 @@ export function createManagers(args: {
     maxConcurrency: workflowConfig?.max_concurrency,
     maxAgentsPerRun: workflowConfig?.max_agents_per_run,
     enableParentNotifications: workflowConfig?.notify_on_complete ?? backgroundNotificationHookEnabled,
-    persistScripts: workflowConfig?.persist_scripts,
+    persistScripts: workflowConfig?.persist_scripts ?? true,
     scriptsDir: workflowConfig?.scripts_dir,
+    persistCheckpoints: workflowConfig?.persist_checkpoints ?? true,
+    runsDir: workflowConfig?.runs_dir,
   })
 
   const configHandler = createConfigHandler({

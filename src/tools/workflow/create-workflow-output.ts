@@ -21,7 +21,7 @@ export function createWorkflowOutputTool(manager: WorkflowManager): ToolDefiniti
       block: tool.schema
         .boolean()
         .optional()
-        .describe("Wait until the run finishes (default: false)."),
+        .describe("Wait until the run finishes (default: false). Only applies to runs active in memory."),
       timeout: tool.schema
         .number()
         .optional()
@@ -29,30 +29,33 @@ export function createWorkflowOutputTool(manager: WorkflowManager): ToolDefiniti
     },
     async execute(args: WorkflowOutputArgs, toolContext) {
       const ctx = toolContext as { abort?: AbortSignal }
-      const run = manager.getRun(args.run_id)
-      if (!run) {
-        return `[ERROR] Workflow run not found: ${args.run_id}`
-      }
+      const runId = args.run_id.trim()
+      const fromCheckpointOnly = manager.isCheckpointOnly(runId)
 
-      if (args.block === true && !isTerminal(run.status)) {
+      if (args.block === true && !fromCheckpointOnly) {
         const timeoutMs = Math.min(args.timeout ?? WORKFLOW_OUTPUT_DEFAULT_TIMEOUT_MS, WORKFLOW_OUTPUT_MAX_TIMEOUT_MS)
         const startTime = Date.now()
         while (Date.now() - startTime < timeoutMs) {
           if (ctx.abort?.aborted) break
-          const current = manager.getRun(args.run_id)
+          const current = manager.getRun(runId)
           if (!current || isTerminal(current.status)) break
           await new Promise((resolve) => setTimeout(resolve, WORKFLOW_OUTPUT_POLL_INTERVAL_MS))
         }
       }
 
-      const latest = manager.getRun(args.run_id)
+      const latest = manager.getRunOrCheckpoint(runId)
       if (!latest) {
-        return `[ERROR] Workflow run not found: ${args.run_id}`
+        return `[ERROR] Workflow run not found: ${runId}`
       }
 
-      const output = formatRunResult(latest)
-      if (args.block === true && !isTerminal(latest.status)) {
-        return `${output}\n\n> Timed out waiting; the run is still active.`
+      let output = formatRunResult(latest)
+      if (fromCheckpointOnly) {
+        output += `\n\n> Loaded from on-disk checkpoint (run is not active in this process).`
+        if (latest.status === "running" || latest.status === "pending") {
+          output += ` Use workflow_resume(run_id="${runId}") to continue from completed agents.`
+        }
+      } else if (args.block === true && !isTerminal(latest.status)) {
+        output += `\n\n> Timed out waiting; the run is still active.`
       }
       return output
     },

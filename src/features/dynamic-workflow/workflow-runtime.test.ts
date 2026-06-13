@@ -308,4 +308,38 @@ return true`
       await expect(runWorkflow(script, { agent: runner, maxAgents: 1 })).rejects.toThrow(/max agents/)
     })
   })
+
+  describe("#given a checkpoint with completed agents", () => {
+    test("#then skips cached agent calls on replay", async () => {
+      // given
+      const script = `export const meta = { name: 'a', description: 'b' }
+const first = await agent('one', { label: 'first' })
+const second = await agent('two', { label: 'second' })
+return { first, second }`
+      const { scriptHash } = parseWorkflowScript(script)
+      let calls = 0
+      const runner = stubRunner((prompt) => {
+        calls++
+        return prompt
+      })
+
+      // when
+      const result = await runWorkflow(script, {
+        agent: runner,
+        scriptHash,
+        checkpointAgents: {
+          [`${scriptHash.slice(0, 16)}:site0:n0`]: {
+            status: "done",
+            result: "cached-one",
+            label: "first",
+          },
+        },
+      })
+
+      // then
+      expect(result.result).toEqual({ first: "cached-one", second: "two" })
+      expect(calls).toBe(1)
+      expect(result.agentCount).toBe(2)
+    })
+  })
 })

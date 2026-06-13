@@ -1,4 +1,5 @@
 import type { PluginInput } from "@opencode-ai/plugin"
+import { existsSync, readdirSync } from "node:fs"
 import type { BackgroundManager } from "../background-agent"
 import { log } from "../../shared/logger"
 import {
@@ -12,6 +13,19 @@ import { notifyWorkflowComplete, notifyWorkflowStarted } from "./workflow-notifi
 import { buildAgentCompletionMessage, buildProgressBoard, postToCoordinator } from "./workflow-progress"
 import { parseWorkflowScript, runWorkflow } from "./workflow-runtime"
 import { saveWorkflowScript } from "./script-store"
+import {
+  assertStructuredCloneableCheckpointValue,
+  createInitialCheckpoint,
+  isCheckpointResumable,
+  markCheckpointCancelled,
+  readWorkflowCheckpoint,
+  resolveRunsDir,
+  writeWorkflowCheckpoint,
+  type WorkflowCheckpoint,
+  type WorkflowCheckpointAgentEntry,
+} from "./workflow-checkpoint"
+import { checkpointToRunSnapshot } from "./workflow-checkpoint-view"
+import { resolveWorkflowScript } from "./workflow-script-loader"
 import { WorkflowSubagentRunner } from "./workflow-subagent-runner"
 import type { WorkflowAgentEntry, WorkflowRun } from "./types"
 
@@ -27,10 +41,14 @@ export interface WorkflowManagerOptions {
   enableParentNotifications?: boolean
   persistScripts?: boolean
   scriptsDir?: string
+  persistCheckpoints?: boolean
+  runsDir?: string
 }
 
 export interface StartWorkflowInput {
-  script: string
+  script?: string
+  scriptPath?: string
+  resumeFromRunId?: string
   args?: unknown
   parentSessionID: string
   parentMessageID: string
@@ -40,12 +58,17 @@ export interface StartWorkflowInput {
   toolCallID?: string
 }
 
+export interface ResumeWorkflowInput extends Omit<StartWorkflowInput, "resumeFromRunId"> {
+  runId: string
+}
+
 interface ActiveRun {
   run: WorkflowRun
   controller: AbortController
   pushChain: Promise<void>
   /** Last text posted to the coordinator, used to drop duplicate consecutive snapshots */
   lastPushedText?: string
+  checkpoint: WorkflowCheckpoint
 }
 
 export class WorkflowManager {
@@ -58,7 +81,22 @@ export class WorkflowManager {
   }
 
   async start(input: StartWorkflowInput): Promise<WorkflowRun> {
-    const { meta } = parseWorkflowScript(input.script)
+    const resumeFromRunId = input.resumeFromRunId?.trim()
+    const resolved = await resolveWorkflowScript({
+      directory: this.options.directory,
+      script: input.script,
+      scriptPath: input.scriptPath,
+      args: input.args,
+      resumeFromRunId,
+      runsDir: this.options.runsDir,
+      isRunActiveInMemory: resumeFromRunId ? this.isRunActive(resumeFromRunId) : false,
+    })
+
+    if (resolved.interrupted && resumeFromRunId) {
+      this.markInterruptedCheckpointSuperseded(resumeFromRunId)
+    }
+
+    const { meta } = parseWorkflowScript(resolved.script)
 
     const run: WorkflowRun = {
       id: `wf_${crypto.randomUUID().slice(0, 8)}`,
@@ -69,8 +107,11 @@ export class WorkflowManager {
       parentAgent: input.parentAgent,
       parentTools: input.parentTools,
       parentModel: input.parentModel,
-      script: input.script,
-      args: input.args,
+      script: resolved.script,
+      scriptPath: resolved.scriptPath,
+      scriptHash: resolved.scriptHash,
+      resumeFromRunId: resolved.resumeFromRunId,
+      args: resolved.args,
       phases: meta.phases?.map((phase) => phase.title) ?? [],
       logs: [],
       agents: [],
@@ -78,13 +119,26 @@ export class WorkflowManager {
       toolCallID: input.toolCallID,
     }
 
+    const checkpoint = createInitialCheckpoint({
+      runId: run.id,
+      parentRunId: resolved.resumeFromRunId,
+      scriptHash: resolved.scriptHash,
+      script: resolved.script,
+      scriptPath: resolved.scriptPath,
+      args: resolved.args,
+      meta,
+      phases: run.phases,
+      inheritedAgents: resolved.inheritedAgents,
+    })
+    run.checkpointPath = this.maybeWriteCheckpoint(checkpoint)
+
     // Create a dedicated coordinator session that holds the live checkbox
     // progress board. The user opens it via /session (the workflow tool card is
     // not clickable in the stock OpenCode TUI).
     run.coordinatorSessionId = await this.createCoordinatorSession(run)
 
     const controller = new AbortController()
-    this.runs.set(run.id, { run, controller, pushChain: Promise.resolve() })
+    this.runs.set(run.id, { run, controller, pushChain: Promise.resolve(), checkpoint })
     this.trackPending(run)
 
     if (run.coordinatorSessionId) {
@@ -92,8 +146,76 @@ export class WorkflowManager {
       notifyWorkflowStarted(this.options.client, run)
     }
 
-    void this.executeRun(run, controller)
+    void this.executeRun(run.id, controller)
     return run
+  }
+
+  async resume(input: ResumeWorkflowInput): Promise<WorkflowRun> {
+    return this.start({
+      ...input,
+      resumeFromRunId: input.runId,
+    })
+  }
+
+  listResumableRuns(): WorkflowCheckpoint[] {
+    const dir = resolveRunsDir(this.options.directory, this.options.runsDir)
+    if (!existsSync(dir)) return []
+    try {
+      return readdirSync(dir)
+        .filter((name) => name.endsWith(".json"))
+        .map((name) => readWorkflowCheckpoint(this.options.directory, name.slice(0, -5), this.options.runsDir))
+        .filter((checkpoint): checkpoint is WorkflowCheckpoint => checkpoint !== null)
+        .filter((checkpoint) => isCheckpointResumable(checkpoint, this.isRunActive(checkpoint.runId)))
+    } catch {
+      return []
+    }
+  }
+
+  isRunActive(runId: string): boolean {
+    const entry = this.runs.get(runId)
+    if (!entry) return false
+    return entry.run.status === "pending" || entry.run.status === "running"
+  }
+
+  getCheckpoint(runId: string): WorkflowCheckpoint | null {
+    return readWorkflowCheckpoint(this.options.directory, runId, this.options.runsDir)
+  }
+
+  getRunOrCheckpoint(runId: string): WorkflowRun | undefined {
+    const active = this.getRun(runId)
+    if (active) return active
+    const checkpoint = this.getCheckpoint(runId)
+    if (!checkpoint) return undefined
+    return checkpointToRunSnapshot(checkpoint, this.options.directory, this.options.runsDir)
+  }
+
+  isCheckpointOnly(runId: string): boolean {
+    return !this.runs.has(runId) && this.getCheckpoint(runId) !== null
+  }
+
+  async cancelRunOrStaleCheckpoint(runId: string): Promise<"memory" | "checkpoint" | "not_found" | "already_terminal"> {
+    if (this.isRunActive(runId)) {
+      const cancelled = await this.cancel(runId)
+      return cancelled ? "memory" : "already_terminal"
+    }
+
+    const checkpoint = this.getCheckpoint(runId)
+    if (!checkpoint) return "not_found"
+    if (checkpoint.status === "completed" || checkpoint.status === "cancelled") {
+      return "already_terminal"
+    }
+
+    const updated = markCheckpointCancelled(checkpoint, "cancelled (run no longer active in memory)")
+    this.maybeWriteCheckpoint(updated)
+    return "checkpoint"
+  }
+
+  private markInterruptedCheckpointSuperseded(runId: string): void {
+    const checkpoint = this.getCheckpoint(runId)
+    if (!checkpoint) return
+    if (checkpoint.status !== "running" && checkpoint.status !== "pending") return
+    const updated = markCheckpointCancelled(checkpoint, "interrupted; resumed in a new run")
+    this.maybeWriteCheckpoint(updated)
   }
 
   private async createCoordinatorSession(run: WorkflowRun): Promise<string | undefined> {
@@ -162,6 +284,8 @@ export class WorkflowManager {
       return false
     }
     entry.run.status = "cancelled"
+    entry.checkpoint.status = "cancelled"
+    entry.run.checkpointPath = this.maybeWriteCheckpoint(entry.checkpoint)
     entry.controller.abort()
     await this.cancelChildTasks(entry.run)
     return true
@@ -178,9 +302,14 @@ export class WorkflowManager {
     return count
   }
 
-  private async executeRun(run: WorkflowRun, controller: AbortController): Promise<void> {
+  private async executeRun(runId: string, controller: AbortController): Promise<void> {
+    const entry = this.runs.get(runId)
+    if (!entry) return
+    const run = entry.run
     run.status = "running"
     run.startedAt = new Date()
+    entry.checkpoint.status = "running"
+    run.checkpointPath = this.maybeWriteCheckpoint(entry.checkpoint)
 
     const runner = new WorkflowSubagentRunner({
       backgroundManager: this.options.backgroundManager,
@@ -193,15 +322,15 @@ export class WorkflowManager {
       defaultAgent: this.options.defaultSubagent ?? WORKFLOW_DEFAULT_SUBAGENT,
       onTaskLaunched: ({ taskId, sessionId, label }) => {
         if (!run.childTaskIds.includes(taskId)) run.childTaskIds.push(taskId)
-        const entry = findRunningAgent(run, label)
-        if (entry) {
-          entry.backgroundTaskId = taskId
-          if (sessionId) entry.sessionId = sessionId
+        const agentEntry = findRunningAgent(run, label)
+        if (agentEntry) {
+          agentEntry.backgroundTaskId = taskId
+          if (sessionId) agentEntry.sessionId = sessionId
         }
       },
       onTaskSession: ({ sessionId, label }) => {
-        const entry = findRunningAgent(run, label)
-        if (entry) entry.sessionId = sessionId
+        const agentEntry = findRunningAgent(run, label)
+        if (agentEntry) agentEntry.sessionId = sessionId
       },
     })
 
@@ -213,31 +342,53 @@ export class WorkflowManager {
         concurrency: this.options.maxConcurrency ?? WORKFLOW_DEFAULT_MAX_CONCURRENCY,
         maxAgents: this.options.maxAgentsPerRun ?? WORKFLOW_DEFAULT_MAX_AGENTS_PER_RUN,
         signal: controller.signal,
+        scriptHash: run.scriptHash,
+        checkpointAgents: entry.checkpoint.agents,
         onLog: (message) => {
           run.logs.push(message)
         },
         onPhase: (title) => {
           run.currentPhase = title
+          entry.checkpoint.currentPhase = title
           if (!run.phases.includes(title)) run.phases.push(title)
+          if (!entry.checkpoint.phases.includes(title)) entry.checkpoint.phases.push(title)
           this.schedulePush(run.id)
         },
         onAgentStart: (event) => {
+          if (event.fromCheckpoint) return
           run.agents.push({
             id: run.agents.length + 1,
             label: event.label,
             phase: event.phase,
             prompt: event.prompt,
             status: "running",
+            checkpointId: event.checkpointId,
           })
           this.schedulePush(run.id)
         },
         onAgentEnd: (event) => {
-          const entry = findRunningAgent(run, event.label)
-          if (entry) {
-            entry.status = event.result === null ? "error" : "done"
-            entry.resultPreview = preview(event.result)
-            this.enqueueCoordinatorPush(run.id, buildAgentCompletionMessage(entry, event.result))
+          if (event.fromCheckpoint) {
+            run.agents.push({
+              id: run.agents.length + 1,
+              label: event.label,
+              phase: event.phase,
+              prompt: "",
+              status: event.result === null ? "error" : "done",
+              checkpointId: event.checkpointId,
+              resultPreview: preview(event.result),
+            })
+            return
           }
+          const agentEntry = findRunningAgent(run, event.label, event.checkpointId)
+          if (agentEntry) {
+            agentEntry.status = event.result === null ? "error" : "done"
+            agentEntry.resultPreview = preview(event.result)
+            agentEntry.checkpointId = event.checkpointId
+            this.enqueueCoordinatorPush(run.id, buildAgentCompletionMessage(agentEntry, event.result))
+          }
+        },
+        onCheckpointAgent: (checkpointId, agentCheckpoint) => {
+          this.recordCheckpointAgent(entry, checkpointId, agentCheckpoint)
         },
       })
 
@@ -251,20 +402,51 @@ export class WorkflowManager {
       run.durationMs = result.durationMs
       run.status = "completed"
       run.completedAt = new Date()
+      entry.checkpoint.status = "completed"
+      entry.checkpoint.error = undefined
 
       await this.maybePersistScript(run)
     } catch (error) {
       if (controller.signal.aborted) {
         run.status = "cancelled"
+        entry.checkpoint.status = "cancelled"
         markRunningAgentsSkipped(run)
       } else {
         run.status = "error"
         run.error = error instanceof Error ? error.message : String(error)
+        entry.checkpoint.status = "error"
+        entry.checkpoint.error = run.error
       }
       run.completedAt = new Date()
       run.durationMs = run.startedAt ? Date.now() - run.startedAt.getTime() : undefined
     } finally {
+      run.checkpointPath = this.maybeWriteCheckpoint(entry.checkpoint)
       this.finishRun(run)
+    }
+  }
+
+  private recordCheckpointAgent(
+    entry: ActiveRun,
+    checkpointId: string,
+    agentCheckpoint: WorkflowCheckpointAgentEntry,
+  ): void {
+    if (agentCheckpoint.result !== undefined) {
+      assertStructuredCloneableCheckpointValue(agentCheckpoint.result, `checkpoint agent result (${checkpointId})`)
+    }
+    entry.checkpoint.agents[checkpointId] = agentCheckpoint
+    entry.run.checkpointPath = this.maybeWriteCheckpoint(entry.checkpoint)
+  }
+
+  private maybeWriteCheckpoint(checkpoint: WorkflowCheckpoint): string | undefined {
+    if (this.options.persistCheckpoints === false) return undefined
+    try {
+      return writeWorkflowCheckpoint(this.options.directory, checkpoint, this.options.runsDir)
+    } catch (error) {
+      log("[dynamic-workflow] Failed to write workflow checkpoint:", {
+        runId: checkpoint.runId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return undefined
     }
   }
 
@@ -298,7 +480,7 @@ export class WorkflowManager {
   }
 
   private async maybePersistScript(run: WorkflowRun): Promise<void> {
-    if (!this.options.persistScripts) return
+    if (this.options.persistScripts === false) return
     try {
       const path = await saveWorkflowScript({
         directory: this.options.directory,
@@ -333,10 +515,16 @@ export class WorkflowManager {
   }
 }
 
-function findRunningAgent(run: WorkflowRun, label: string): WorkflowAgentEntry | undefined {
+function findRunningAgent(
+  run: WorkflowRun,
+  label: string,
+  checkpointId?: string,
+): WorkflowAgentEntry | undefined {
   for (let i = run.agents.length - 1; i >= 0; i--) {
     const entry = run.agents[i]
-    if (entry.label === label && entry.status === "running") return entry
+    if (entry.status !== "running") continue
+    if (checkpointId && entry.checkpointId === checkpointId) return entry
+    if (entry.label === label) return entry
   }
   return undefined
 }

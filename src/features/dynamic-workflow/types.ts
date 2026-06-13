@@ -35,6 +35,8 @@ export interface WorkflowAgentEntry {
   backgroundTaskId?: string
   resultPreview?: string
   error?: string
+  /** Auto-generated or explicit checkpoint key for resume */
+  checkpointId?: string
 }
 
 export interface WorkflowRun {
@@ -47,6 +49,10 @@ export interface WorkflowRun {
   parentTools?: Record<string, boolean>
   parentModel?: { providerID: string; modelID: string }
   script: string
+  scriptPath?: string
+  scriptHash?: string
+  resumeFromRunId?: string
+  checkpointPath?: string
   args?: unknown
   phases: string[]
   currentPhase?: string
@@ -69,6 +75,7 @@ export interface WorkflowAgentRunOptions {
   schema?: Record<string, unknown>
   model?: string
   subagentType?: string
+  checkpointId?: string
   signal?: AbortSignal
 }
 

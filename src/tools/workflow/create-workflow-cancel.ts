@@ -24,16 +24,20 @@ export function createWorkflowCancelTool(manager: WorkflowManager): ToolDefiniti
         return "[ERROR] Provide a run_id or set all=true."
       }
 
-      const run = manager.getRun(args.run_id)
-      if (!run) {
-        return `[ERROR] Workflow run not found: ${args.run_id}`
+      const runId = args.run_id.trim()
+      const result = await manager.cancelRunOrStaleCheckpoint(runId)
+      switch (result) {
+        case "memory": {
+          const run = manager.getRun(runId)
+          return `Workflow run cancelled: ${runId} (${run?.meta.name ?? "unknown"}).`
+        }
+        case "checkpoint":
+          return `Stale workflow checkpoint marked cancelled: ${runId} (run was not active in memory). You can workflow_resume if needed.`
+        case "already_terminal":
+          return `[ERROR] Cannot cancel run ${runId}: already in a terminal state.`
+        case "not_found":
+          return `[ERROR] Workflow run not found: ${runId}`
       }
-
-      const cancelled = await manager.cancel(args.run_id)
-      if (!cancelled) {
-        return `[ERROR] Cannot cancel run ${args.run_id}: current status is "${run.status}".`
-      }
-      return `Workflow run cancelled: ${args.run_id} (${run.meta.name}).`
     },
   })
 }

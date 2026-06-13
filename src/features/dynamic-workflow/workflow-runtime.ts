@@ -1,6 +1,10 @@
 import vm from "node:vm"
 import { parse } from "acorn"
 import type { Node } from "acorn"
+import { generateAutoAgentId, runWithAgentContext } from "./workflow-agent-id"
+import { transformAgentCalls } from "./workflow-agent-transform"
+import type { WorkflowCheckpointAgentEntry } from "./workflow-checkpoint"
+import { hashWorkflowScript } from "./workflow-checkpoint"
 import {
   WORKFLOW_DEFAULT_MAX_AGENTS_PER_RUN,
   WORKFLOW_DEFAULT_MAX_CONCURRENCY,
@@ -30,10 +34,25 @@ export interface RunWorkflowOptions {
   /** Override total sleep() budget per run (default WORKFLOW_SLEEP_TOTAL_MAX_MS). */
   sleepTotalMaxMs?: number
   signal?: AbortSignal
+  scriptHash?: string
+  checkpointAgents?: Record<string, WorkflowCheckpointAgentEntry>
   onLog?: (message: string) => void
   onPhase?: (title: string) => void
-  onAgentStart?: (event: { label: string; phase?: string; prompt: string }) => void
-  onAgentEnd?: (event: { label: string; phase?: string; result: unknown }) => void
+  onAgentStart?: (event: {
+    label: string
+    phase?: string
+    prompt: string
+    checkpointId: string
+    fromCheckpoint?: boolean
+  }) => void
+  onAgentEnd?: (event: {
+    label: string
+    phase?: string
+    result: unknown
+    checkpointId: string
+    fromCheckpoint?: boolean
+  }) => void
+  onCheckpointAgent?: (checkpointId: string, entry: WorkflowCheckpointAgentEntry) => void
 }
 
 interface AgentOptions {
@@ -42,6 +61,7 @@ interface AgentOptions {
   schema?: Record<string, unknown>
   model?: string
   subagentType?: string
+  id?: string
 }
 
 interface RuntimeState {
@@ -59,6 +79,9 @@ export async function runWorkflow<T = unknown>(
 ): Promise<WorkflowRunResult<T>> {
   const started = Date.now()
   const { meta, body } = parseWorkflowScript(script)
+  const scriptHash = options.scriptHash ?? hashWorkflowScript(script)
+  const checkpointAgents = options.checkpointAgents ?? {}
+  const seqCounters = new Map<string, number>()
   const state: RuntimeState = { logs: [], phases: [], agentCount: 0, spent: 0, totalSleepMs: 0 }
   const agentRunner = options.agent
   const maxAgents = options.maxAgents ?? WORKFLOW_DEFAULT_MAX_AGENTS_PER_RUN
@@ -110,7 +133,7 @@ export async function runWorkflow<T = unknown>(
     throwIfAborted()
   }
 
-  const agent = async (prompt: unknown, agentOptions: unknown = {}) => {
+  const __agent = async (siteIndex: number, prompt: unknown, agentOptions: unknown = {}) => {
     throwIfAborted()
     if (state.agentCount >= maxAgents) {
       throw new Error(`workflow exceeded max agents per run (${maxAgents})`)
@@ -118,14 +141,41 @@ export async function runWorkflow<T = unknown>(
     if (budget.total !== null && budget.remaining() <= 0) {
       throw new Error("workflow token budget exhausted")
     }
+    if (typeof siteIndex !== "number" || !Number.isInteger(siteIndex) || siteIndex < 0) {
+      throw new TypeError("__agent site index must be a non-negative integer")
+    }
+
     const taskPrompt = requireString(prompt, "agent prompt")
     const normalizedOptions = normalizeAgentOptions(agentOptions)
     const assignedPhase = normalizedOptions.phase ?? state.currentPhase
     const requestedLabel = normalizedOptions.label?.trim()
+    const checkpointId =
+      normalizedOptions.id?.trim() ||
+      generateAutoAgentId(scriptHash, siteIndex, seqCounters)
+
     const run = limiter(async () => {
       state.agentCount++
       const label = requestedLabel || defaultAgentLabel(assignedPhase, state.agentCount)
-      options.onAgentStart?.({ label, phase: assignedPhase, prompt: taskPrompt })
+      const cached = checkpointAgents[checkpointId]
+      if (cached?.status === "done") {
+        options.onAgentStart?.({
+          label,
+          phase: assignedPhase,
+          prompt: taskPrompt,
+          checkpointId,
+          fromCheckpoint: true,
+        })
+        options.onAgentEnd?.({
+          label,
+          phase: assignedPhase,
+          result: cached.result,
+          checkpointId,
+          fromCheckpoint: true,
+        })
+        return cached.result
+      }
+
+      options.onAgentStart?.({ label, phase: assignedPhase, prompt: taskPrompt, checkpointId })
       try {
         throwIfAborted()
         const result = await agentRunner.run(taskPrompt, {
@@ -134,16 +184,32 @@ export async function runWorkflow<T = unknown>(
           schema: normalizedOptions.schema,
           model: normalizedOptions.model,
           subagentType: normalizedOptions.subagentType,
+          checkpointId,
           signal: options.signal,
         })
         throwIfAborted()
         state.spent += estimateTokens(result)
-        options.onAgentEnd?.({ label, phase: assignedPhase, result })
+        options.onAgentEnd?.({ label, phase: assignedPhase, result, checkpointId })
+        options.onCheckpointAgent?.(checkpointId, {
+          status: "done",
+          result,
+          label,
+          phase: assignedPhase,
+          prompt: taskPrompt,
+        })
         return result
       } catch (error) {
         if (options.signal?.aborted) throw error
         log(`agent ${label} failed: ${error instanceof Error ? error.message : String(error)}`)
-        options.onAgentEnd?.({ label, phase: assignedPhase, result: null })
+        options.onAgentEnd?.({ label, phase: assignedPhase, result: null, checkpointId })
+        options.onCheckpointAgent?.(checkpointId, {
+          status: "error",
+          result: null,
+          label,
+          phase: assignedPhase,
+          prompt: taskPrompt,
+          error: error instanceof Error ? error.message : String(error),
+        })
         return null
       }
     })
@@ -154,6 +220,8 @@ export async function runWorkflow<T = unknown>(
     )
     return run
   }
+
+  const agent = (prompt: unknown, agentOptions: unknown = {}) => __agent(0, prompt, agentOptions)
 
   const parallel = async (thunks: Array<() => Promise<unknown>>) => {
     throwIfAborted()
@@ -166,7 +234,7 @@ export async function runWorkflow<T = unknown>(
     return Promise.all(
       thunks.map(async (thunk, index) => {
         try {
-          return await thunk()
+          return await runWithAgentContext({ branchIndex: index }, () => thunk())
         } catch (error) {
           if (options.signal?.aborted) throw error
           log(`parallel[${index}] failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -187,19 +255,21 @@ export async function runWorkflow<T = unknown>(
     }
     return Promise.all(
       items.map(async (item, index) => {
-        let value: unknown = item
-        for (const stage of stages) {
-          try {
-            throwIfAborted()
-            value = await stage(value, item, index)
-            throwIfAborted()
-          } catch (error) {
-            if (options.signal?.aborted) throw error
-            log(`pipeline[${index}] failed: ${error instanceof Error ? error.message : String(error)}`)
-            return null
+        return runWithAgentContext({ itemIndex: index }, async () => {
+          let value: unknown = item
+          for (const stage of stages) {
+            try {
+              throwIfAborted()
+              value = await stage(value, item, index)
+              throwIfAborted()
+            } catch (error) {
+              if (options.signal?.aborted) throw error
+              log(`pipeline[${index}] failed: ${error instanceof Error ? error.message : String(error)}`)
+              return null
+            }
           }
-        }
-        return value
+          return value
+        })
       }),
     )
   }
@@ -207,6 +277,7 @@ export async function runWorkflow<T = unknown>(
   const cwd = options.cwd ?? process.cwd()
   const context = vm.createContext({
     agent,
+    __agent,
     parallel,
     pipeline,
     log,
@@ -251,13 +322,13 @@ export async function runWorkflow<T = unknown>(
   }
 }
 
-export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body: string } {
+export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body: string; scriptHash: string } {
   const ast = parse(script, {
     ecmaVersion: "latest",
     sourceType: "module",
     allowAwaitOutsideFunction: true,
     allowReturnOutsideFunction: true,
-    ranges: false,
+    ranges: true,
   }) as unknown as AnyNode
 
   assertDeterministicAst(ast)
@@ -287,9 +358,20 @@ export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body:
   const meta = evaluateLiteral(declarator.init as AnyNode, "meta")
   validateMeta(meta)
 
+  const rawBody = script.slice(0, first.start) + script.slice(first.end)
+  const bodyAst = parse(rawBody, {
+    ecmaVersion: "latest",
+    sourceType: "module",
+    allowAwaitOutsideFunction: true,
+    allowReturnOutsideFunction: true,
+    ranges: true,
+  }) as unknown as AnyNode
+  const transformed = transformAgentCalls(rawBody, bodyAst)
+
   return {
     meta,
-    body: script.slice(0, first.start) + script.slice(first.end),
+    body: transformed.body,
+    scriptHash: hashWorkflowScript(script),
   }
 }
 
@@ -536,6 +618,7 @@ function normalizeAgentOptions(value: unknown): AgentOptions {
     phase: optionalString(options.phase, "agent phase"),
     model: optionalString(options.model, "agent model"),
     subagentType: optionalString(subagentType, "subagent type"),
+    id: optionalString(options.id, "agent id"),
     schema: options.schema && typeof options.schema === "object" ? options.schema : undefined,
   }
 }

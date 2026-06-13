@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { WorkflowManager } from "./workflow-manager"
 import type { BackgroundManager } from "../background-agent"
 import type { PluginInput } from "@opencode-ai/plugin"
+import { hashWorkflowScript, readWorkflowCheckpoint, writeWorkflowCheckpoint, createInitialCheckpoint } from "./workflow-checkpoint"
 
 type OpencodeClient = PluginInput["client"]
 
@@ -245,6 +249,145 @@ describe("WorkflowManager", () => {
       expect(posts.length).toBeGreaterThan(0)
       for (let i = 1; i < posts.length; i++) {
         expect(posts[i].text).not.toBe(posts[i - 1].text)
+      }
+    })
+  })
+
+  describe("#given a failed run checkpoint", () => {
+    test("#then resume skips the completed agent", async () => {
+      // given
+      const dir = mkdtempSync(join(tmpdir(), "omo-wf-resume-"))
+      const script = `export const meta = { name: 'resume_demo', description: 'resume demo' }
+const first = await agent('first step', { label: 'first' })
+const second = await agent('second step', { label: 'second' })
+return { first, second }`
+      const scriptHash = hashWorkflowScript(script)
+      let calls = 0
+      const { manager: bg } = createFakeBackgroundManager()
+      const client = createFakeClient("ignored")
+      const wm = new WorkflowManager({
+        client,
+        backgroundManager: {
+          async launch(input: { description: string }) {
+            calls++
+            const id = `bg_${calls}`
+            return {
+              id,
+              sessionID: `ses_${calls}`,
+              status: "error",
+              description: input.description,
+            }
+          },
+          getTask(id: string) {
+            return {
+              id,
+              sessionID: id.replace("bg_", "ses_"),
+              status: "error",
+            }
+          },
+          async cancelTask() {
+            return true
+          },
+        } as unknown as BackgroundManager,
+        directory: dir,
+        enableParentNotifications: false,
+        persistCheckpoints: true,
+      })
+
+      const failed = createInitialCheckpoint({
+        runId: "wf_failed01",
+        scriptHash,
+        script,
+        meta: { name: "resume_demo", description: "resume demo" },
+        phases: [],
+      })
+      failed.status = "error"
+      failed.agents[`${scriptHash.slice(0, 16)}:site0:n0`] = {
+        status: "done",
+        result: "cached-first",
+        label: "first",
+      }
+      writeWorkflowCheckpoint(dir, failed)
+
+      try {
+        // when
+        const resumed = await wm.start({
+          resumeFromRunId: "wf_failed01",
+          parentSessionID: "ses_parent",
+          parentMessageID: "msg_1",
+        })
+        const finished = await waitForTerminal(wm, resumed.id)
+
+        // then
+        expect(finished.status).toBe("completed")
+        expect(finished.result).toEqual({ first: "cached-first", second: null })
+        expect(calls).toBe(1)
+        expect(finished.resumeFromRunId).toBe("wf_failed01")
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    test("#then resumes from a stale running checkpoint after interrupt", async () => {
+      // given
+      const dir = mkdtempSync(join(tmpdir(), "omo-wf-interrupted-"))
+      const script = `export const meta = { name: 'resume_demo', description: 'resume demo' }
+const first = await agent('first step', { label: 'first' })
+const second = await agent('second step', { label: 'second' })
+return { first, second }`
+      const scriptHash = hashWorkflowScript(script)
+      let calls = 0
+      const wm = new WorkflowManager({
+        client: createFakeClient("step-two"),
+        backgroundManager: {
+          async launch() {
+            calls++
+            return { id: "bg_2", sessionID: "ses_2", status: "completed", description: "second" }
+          },
+          getTask() {
+            return { id: "bg_2", sessionID: "ses_2", status: "completed" }
+          },
+          async cancelTask() {
+            return true
+          },
+        } as unknown as BackgroundManager,
+        directory: dir,
+        enableParentNotifications: false,
+        persistCheckpoints: true,
+      })
+
+      const interrupted = createInitialCheckpoint({
+        runId: "wf_interrupted",
+        scriptHash,
+        script,
+        meta: { name: "resume_demo", description: "resume demo" },
+        phases: [],
+      })
+      interrupted.status = "running"
+      interrupted.agents[`${scriptHash.slice(0, 16)}:site0:n0`] = {
+        status: "done",
+        result: "cached-first",
+        label: "first",
+      }
+      writeWorkflowCheckpoint(dir, interrupted)
+
+      try {
+        // when
+        const resumed = await wm.start({
+          resumeFromRunId: "wf_interrupted",
+          parentSessionID: "ses_parent",
+          parentMessageID: "msg_1",
+        })
+        const finished = await waitForTerminal(wm, resumed.id)
+
+        // then
+        expect(finished.status).toBe("completed")
+        expect(finished.result).toEqual({ first: "cached-first", second: "step-two" })
+        expect(calls).toBe(1)
+        const oldCheckpoint = readWorkflowCheckpoint(dir, "wf_interrupted")
+        expect(oldCheckpoint?.status).toBe("cancelled")
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
       }
     })
   })

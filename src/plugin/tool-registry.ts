@@ -58,6 +58,7 @@ const LOW_PRIORITY_TOOL_ORDER = [
   "background_cancel",
   "workflow_output",
   "workflow_cancel",
+  "workflow_resume",
   "edit",
   "ast_grep_replace",
   "ast_grep_search",

@@ -11,10 +11,14 @@ export const DynamicWorkflowConfigSchema = z.object({
   default_subagent: z.string().optional(),
   /** Send a parent-session notification when a run finishes (default: true) */
   notify_on_complete: z.boolean().optional(),
-  /** Persist successful workflow scripts to disk (default: false) */
-  persist_scripts: z.boolean().optional(),
+  /** Persist successful workflow scripts to disk (default: true) */
+  persist_scripts: z.boolean().optional().default(true),
   /** Directory for persisted scripts (default: .opencode/workflows) */
   scripts_dir: z.string().optional(),
+  /** Persist workflow run checkpoints for resume (default: true) */
+  persist_checkpoints: z.boolean().optional().default(true),
+  /** Directory for workflow run checkpoints (default: .opencode/workflows/runs) */
+  runs_dir: z.string().optional(),
 })
 
 export type DynamicWorkflowConfig = z.infer<typeof DynamicWorkflowConfigSchema>

@@ -5743,12 +5743,24 @@
           "type": "boolean"
         },
         "persist_scripts": {
+          "default": true,
           "type": "boolean"
         },
         "scripts_dir": {
           "type": "string"
+        },
+        "persist_checkpoints": {
+          "default": true,
+          "type": "boolean"
+        },
+        "runs_dir": {
+          "type": "string"
         }
       },
+      "required": [
+        "persist_scripts",
+        "persist_checkpoints"
+      ],
       "additionalProperties": false
     },
     "notification": {
